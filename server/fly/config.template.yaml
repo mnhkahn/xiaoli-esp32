@@ -1,0 +1,158 @@
+server:
+  ip: 0.0.0.0
+  port: 8000
+  http_port: 8003
+  websocket: __PUBLIC_WS_URL__
+  vision_explain: __PUBLIC_VISION_URL__
+  timezone_offset: +8
+  auth_key: "__SERVER_AUTH_KEY__"
+  auth:
+    enabled: __ENABLE_SERVER_AUTH__
+    allowed_devices: __SERVER_AUTH_ALLOWED_DEVICES__
+  mqtt_gateway: null
+  mqtt_signature_key: null
+  udp_gateway: null
+
+log:
+  log_level: INFO
+  log_dir: tmp
+  data_dir: data
+
+delete_audio: true
+close_connection_no_voice_time: 120
+tts_timeout: 10
+tool_call_timeout: 30
+enable_wakeup_words_response_cache: true
+enable_greeting: false
+enable_stop_tts_notify: false
+enable_websocket_ping: false
+tts_audio_send_delay: 0
+wakeup_words:
+  - "小李"
+  - "你好小李"
+
+prompt: |
+  你是一个叫__DEVICE_NAME__的中文语音助手。回答要简短、自然、适合通过扬声器播放。
+  当用户询问摄像头、坐姿、学习状态时，可以主动使用设备摄像头能力获取信息。
+
+selected_module:
+  VAD: SileroVAD
+  ASR: __ASR_MODULE__
+  LLM: __LLM_MODULE__
+  VLLM: __VLLM_MODULE__
+  TTS: __TTS_MODULE__
+  Memory: nomem
+  Intent: function_call
+
+Intent:
+  function_call:
+    type: function_call
+    functions:
+      - get_weather
+      - web_search
+
+ASR:
+  OpenaiASR:
+    type: openai
+    api_key: "__OPENAI_API_KEY__"
+    base_url: __OPENAI_ASR_BASE_URL__
+    model_name: __OPENAI_ASR_MODEL__
+    output_dir: tmp/
+  GroqASR:
+    type: openai
+    api_key: "__GROQ_API_KEY__"
+    base_url: https://api.groq.com/openai/v1/audio/transcriptions
+    model_name: whisper-large-v3-turbo
+    output_dir: tmp/
+  SiliconFlowASR:
+    type: openai
+    api_key: "__SILICONFLOW_API_KEY__"
+    base_url: https://api.siliconflow.cn/v1/audio/transcriptions
+    model_name: __SILICONFLOW_ASR_MODEL__
+    output_dir: tmp/
+
+LLM:
+  ChatGLMLLM:
+    type: openai
+    model_name: glm-4-flash
+    url: https://open.bigmodel.cn/api/paas/v4/
+    api_key: "__ZHIPU_API_KEY__"
+  AliLLM:
+    type: openai
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    model_name: qwen-flash
+    api_key: "__DASHSCOPE_API_KEY__"
+    temperature: 0.7
+    max_tokens: 500
+    top_p: 1
+    frequency_penalty: 0
+  OpenAILLM:
+    type: openai
+    model_name: __OPENAI_LLM_MODEL__
+    url: https://api.openai.com/v1/
+    api_key: "__OPENAI_API_KEY__"
+  OpenRouterLLM:
+    type: openai
+    model_name: __OPENROUTER_LLM_MODEL__
+    url: https://openrouter.ai/api/v1/
+    api_key: "__OPENROUTER_API_KEY__"
+  SiliconFlowLLM:
+    type: openai
+    model_name: __SILICONFLOW_LLM_MODEL__
+    url: https://api.siliconflow.cn/v1/
+    api_key: "__SILICONFLOW_API_KEY__"
+    temperature: 0.2
+    max_tokens: 120
+
+VLLM:
+  ChatGLMVLLM:
+    type: openai
+    model_name: glm-4v-flash
+    url: https://open.bigmodel.cn/api/paas/v4/
+    api_key: "__ZHIPU_API_KEY__"
+  QwenVLVLLM:
+    type: openai
+    model_name: qwen3.5-flash
+    url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key: "__DASHSCOPE_API_KEY__"
+  OpenRouterVLLM:
+    type: openai
+    model_name: __OPENROUTER_VLLM_MODEL__
+    url: https://openrouter.ai/api/v1/
+    api_key: "__OPENROUTER_API_KEY__"
+  SiliconFlowVLLM:
+    type: openai
+    model_name: __SILICONFLOW_VLLM_MODEL__
+    url: https://api.siliconflow.cn/v1/
+    api_key: "__SILICONFLOW_API_KEY__"
+
+TTS:
+  EdgeTTS:
+    type: edge
+    voice: zh-CN-XiaoxiaoNeural
+    output_dir: tmp/
+  SiliconFlowTTS:
+    type: siliconflow
+    model: __SILICONFLOW_TTS_MODEL__
+    access_token: "__SILICONFLOW_API_KEY__"
+    voice: __SILICONFLOW_TTS_VOICE__
+    response_format: __SILICONFLOW_TTS_RESPONSE_FORMAT__
+    output_dir: tmp/
+
+Memory:
+  nomem:
+    type: nomem
+
+plugins:
+  get_weather:
+    api_host: "nk3h2rrgjv.re.qweatherapi.com"
+    api_key: "__QWEATHER_API_KEY__"
+    default_location: "北京市海淀区海淀街道"
+    default_location_id: "101010200"
+    default_location_name: "北京市海淀区海淀街道"
+    prefer_default_location: true
+  web_search:
+    provider: "metaso"
+    description: "联网搜索工具。当用户明确需要联网搜索问题时使用此工具。"
+    max_results: 5
+    api_key: "__WEB_SEARCH_API_KEY__"
