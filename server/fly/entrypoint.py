@@ -117,6 +117,9 @@ def admin_nginx_routes(enabled, port):
         "            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
         "            proxy_set_header X-Forwarded-Proto $scheme;\n"
         "            proxy_set_header X-Forwarded-Host $host;\n"
+        "            proxy_http_version 1.1;\n"
+        "            proxy_set_header Upgrade $http_upgrade;\n"
+        "            proxy_set_header Connection $connection_upgrade;\n"
         "        }\n\n"
         "        location /admin/ {\n"
         f"            proxy_pass http://127.0.0.1:{port};\n"
@@ -125,6 +128,9 @@ def admin_nginx_routes(enabled, port):
         "            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
         "            proxy_set_header X-Forwarded-Proto $scheme;\n"
         "            proxy_set_header X-Forwarded-Host $host;\n"
+        "            proxy_http_version 1.1;\n"
+        "            proxy_set_header Upgrade $http_upgrade;\n"
+        "            proxy_set_header Connection $connection_upgrade;\n"
         "        }\n"
     )
 
@@ -153,6 +159,7 @@ def build_values():
     admin_enabled = bool_env(values["XIAOLI_ADMIN_ENABLED"])
     values["XIAOLI_ADMIN_ENABLED"] = "true" if admin_enabled else "false"
     values["ADMIN_NGINX_ROUTES"] = admin_nginx_routes(admin_enabled, values["XIAOLI_ADMIN_PORT"])
+    values["VISION_PROXY_PORT"] = values["XIAOLI_ADMIN_PORT"] if admin_enabled else "8003"
     if not values["ADMIN_PUBLIC_BASE_URL"]:
         values["ADMIN_PUBLIC_BASE_URL"] = base_url
     return values
@@ -180,12 +187,22 @@ def render_config():
     print(f"Public vision URL: {values['PUBLIC_VISION_URL']}", flush=True)
     print(f"Edge allowed devices: {values['EDGE_ALLOWED_DEVICE_IDS']}", flush=True)
     print(f"Xiaoli admin enabled: {values['XIAOLI_ADMIN_ENABLED']}", flush=True)
+    return values
 
 
-def start_processes():
-    app = subprocess.Popen(["python", "app.py"], cwd=PROJECT_DIR)
-    nginx = subprocess.Popen(["nginx", "-g", "daemon off;"])
-    children = [app, nginx]
+def process_commands(values):
+    commands = [["python", "app.py"]]
+    if bool_env(values.get("XIAOLI_ADMIN_ENABLED", "false")):
+        commands.append(["/usr/local/bin/xiaoli-admin"])
+    commands.append(["nginx", "-g", "daemon off;"])
+    return commands
+
+
+def start_processes(values):
+    children = []
+    for command in process_commands(values):
+        cwd = PROJECT_DIR if command == ["python", "app.py"] else None
+        children.append(subprocess.Popen(command, cwd=cwd))
 
     def stop(signum, frame):
         print(f"Received signal {signum}, stopping services", flush=True)
@@ -212,8 +229,8 @@ def start_processes():
 
 
 def main():
-    render_config()
-    return start_processes()
+    values = render_config()
+    return start_processes(values)
 
 
 if __name__ == "__main__":

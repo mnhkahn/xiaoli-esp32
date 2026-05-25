@@ -8,7 +8,7 @@ front proxy so Fly can expose both services on one HTTPS hostname:
 - `https://<app>.fly.dev/xiaozhi/ota/` -> internal HTTP/OTA service on `8003`
 - `wss://<app>.fly.dev/xiaozhi/v1/` -> internal WebSocket service on `8000`
 - `https://<app>.fly.dev/mcp/vision/explain` -> internal vision service on `8003`
-- `https://<app>.fly.dev/admin` -> Token-protected admin console on `8004`
+- `https://<app>.fly.dev/admin` -> Go admin console on `8004`
 
 ## First Deploy
 
@@ -34,8 +34,10 @@ Set required model secrets. For the current defaults, the minimum useful set is:
 fly secrets set OPENROUTER_API_KEY=your_openrouter_key
 fly secrets set SILICONFLOW_API_KEY=your_siliconflow_key
 fly secrets set SERVER_AUTH_KEY=$(openssl rand -hex 32)
-fly secrets set ADMIN_ACCESS_TOKEN=$(openssl rand -base64 32)
 fly secrets set ADMIN_SESSION_SECRET=$(openssl rand -hex 32)
+fly secrets set LOGTO_APP_SECRET=your_logto_app_secret
+fly secrets set LANGSMITH_TRACING=true LANGSMITH_API_KEY=your_langsmith_key
+fly secrets set STUDY_MONITOR_ENABLED=true LARK_BOT_WEBHOOK_URL=your_lark_webhook LARK_APP_ID=your_lark_app_id LARK_APP_SECRET=your_lark_app_secret
 ```
 
 Server authentication is enabled by default. OTA is left reachable so devices
@@ -45,9 +47,27 @@ rendered into the upstream `server.auth.allowed_devices` list, because that
 upstream list bypasses token verification. Keep `SERVER_AUTH_KEY` as a Fly
 secret and rotate it if it is ever exposed.
 
-The admin console currently uses a fixed temporary Token. Keep
-`ADMIN_ACCESS_TOKEN` as a long random Fly secret, open `/admin`, and paste the
-Token into the login form. Rotate it if it is ever exposed.
+The admin console is implemented in Go and talks to the upstream Python
+xiaozhi process through a localhost-only bridge on `127.0.0.1:8005`. Logto is
+the only login path. Configure Logto with callback URL:
+
+```text
+https://xiaoli-server.fly.dev/admin/callback
+```
+
+and post-logout redirect URL:
+
+```text
+https://xiaoli-server.fly.dev/admin
+```
+
+Rotate the Logto app secret if it is ever exposed.
+
+The study monitor is optional. When `STUDY_MONITOR_ENABLED=true`, the admin
+server runs a background job in `Asia/Shanghai` time from 17:00 to 21:00 every
+5 minutes. Each run asks the device camera tool to inspect study posture, sends
+the captured image and analysis to the Lark bot, and calls a speaker/TTS tool
+when a reminder is needed.
 
 Deploy:
 
@@ -89,8 +109,26 @@ Important environment variables:
 - `SERVER_AUTH_ALLOWED_DEVICE_IDS`: optional upstream bypass list; normally leave empty so token verification is not bypassed
 - `XIAOLI_ADMIN_ENABLED`: enables the admin console when `true`
 - `XIAOLI_ADMIN_PORT`: internal admin port; default `8004`
-- `ADMIN_ACCESS_TOKEN`: temporary login Token for `/admin`; set as a secret
+- `XIAOLI_BRIDGE_PORT`: localhost-only Python bridge port used by the Go admin; default `8005`
 - `ADMIN_SESSION_SECRET`: signing key for admin cookies; set as a secret
+- `LOGTO_ENDPOINT`: Logto tenant endpoint, for example `https://fpilyb.logto.app/`
+- `LOGTO_APP_ID`: Logto application ID
+- `LOGTO_APP_SECRET`: Logto application secret; set as a secret
+- `ADMIN_ALLOWED_USERS`: optional comma-separated Logto sub/email/username/name allowlist; `*` allows all authenticated users
+- `STUDY_MONITOR_ENABLED`: enables the study monitor background job when `true`; set as a secret in production
+- `STUDY_MONITOR_TIMEZONE`: default `Asia/Shanghai`
+- `STUDY_MONITOR_START_HOUR`: default `17`
+- `STUDY_MONITOR_END_HOUR`: default `21`
+- `STUDY_MONITOR_INTERVAL_SECONDS`: default `300`
+- `STUDY_MONITOR_CAMERA_TOOL`: camera tool name; default `self.camera.take_photo`
+- `STUDY_MONITOR_TOOL_TIMEOUT_SECONDS`: camera tool timeout; default `120`
+- `STUDY_MONITOR_REMINDER_TEXT`: speaker reminder text when posture/focus needs correction
+- `LARK_BOT_WEBHOOK_URL`: custom bot webhook URL; set as a secret
+- `LARK_APP_ID`: Lark app ID used to upload message images; set as a secret
+- `LARK_APP_SECRET`: Lark app secret used to upload message images; set as a secret
+- `LANGSMITH_TRACING`: set to `true` to trace OpenAI-compatible LLM/VLLM calls
+- `LANGSMITH_API_KEY`: LangSmith tracing API key; set as a secret
+- `LANGSMITH_PROJECT`: LangSmith project name; default `xiaoli-server`
 - `ASR_MODULE`: default `SiliconFlowASR`
 - `LLM_MODULE`: default `SiliconFlowLLM`
 - `VLLM_MODULE`: default `SiliconFlowVLLM`

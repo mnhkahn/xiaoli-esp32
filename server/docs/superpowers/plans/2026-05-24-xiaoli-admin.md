@@ -2,26 +2,27 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a Token-protected admin dashboard that directly calls MCP tools on connected ESP32 devices.
+**Goal:** Add a Logto-protected admin dashboard that directly calls MCP tools on connected ESP32 devices.
 
-**Architecture:** Patch the upstream Python service at image build time so the admin HTTP server runs in the same event loop as the existing WebSocket server. Track online `ConnectionHandler` instances in `WebSocketServer`, and have admin APIs call the existing `device_mcp.call_mcp_tool` helper. Nginx proxies `/admin` to the new internal admin port, and the temporary login flow exchanges `ADMIN_ACCESS_TOKEN` for an HMAC-signed admin session cookie.
+**Architecture:** Build a Go admin HTTP server and patch the upstream Python service at image build time to expose a localhost-only bridge to the existing WebSocket/device MCP objects. Track online `ConnectionHandler` instances in `WebSocketServer`; the Go admin calls the bridge for device MCP, TTS, and stream operations. Nginx proxies `/admin` to the Go admin port, and the login flow uses Logto OIDC authorization code with PKCE before issuing an HMAC-signed admin session cookie.
 
-**Tech Stack:** Python 3, aiohttp, HMAC-signed cookies, Nginx, Fly secrets.
+**Tech Stack:** Go, Python 3 bridge, aiohttp, HMAC-signed cookies, Logto OIDC, Nginx, Fly secrets.
 
 ---
 
 ### Task 1: Admin Server Module
 
 **Files:**
-- Create: `fly/xiaoli_admin.py`
+- Create: `cmd/xiaoli-admin/main.go`
+- Create: `internal/admin/`
 
 - [ ] **Step 1: Implement signed cookie helpers**
 
 Create helpers that HMAC-sign JSON payloads using `ADMIN_SESSION_SECRET`, enforce max age, and never log cookie contents.
 
-- [ ] **Step 2: Implement temporary Token login handlers**
+- [ ] **Step 2: Implement Logto login handlers**
 
-Implement `/admin/login` and `/admin/logout`. Login renders a Token form, compares the submitted Token with `ADMIN_ACCESS_TOKEN`, and stores a signed admin session cookie. Keep the existing Logto OIDC code path available only when no `ADMIN_ACCESS_TOKEN` is configured.
+Implement `/admin/login`, `/admin/callback`, and `/admin/logout`. Login redirects to Logto, callback exchanges the code with PKCE, loads userinfo, applies `ADMIN_ALLOWED_USERS`, and stores a signed admin session cookie.
 
 - [ ] **Step 3: Implement admin API handlers**
 
@@ -35,11 +36,12 @@ Serve a compact dashboard at `/admin` with device status, quick buttons for stat
 
 **Files:**
 - Create: `fly/patch_admin.py`
+- Create: `fly/xiaoli_bridge.py`
 - Modify: `Dockerfile`
 
 - [ ] **Step 1: Patch `app.py`**
 
-Insert `from xiaoli_admin import XiaoliAdminServer`, create `admin_server = XiaoliAdminServer(config, ws_server)`, start it as `admin_task`, and include it in shutdown cancellation/wait logic.
+Insert `from xiaoli_bridge import XiaoliBridgeServer`, create `bridge_server = XiaoliBridgeServer(config, ws_server)`, start it as `bridge_task`, and include it in shutdown cancellation/wait logic.
 
 - [ ] **Step 2: Patch `core/websocket_server.py`**
 
@@ -47,7 +49,7 @@ Add an `active_connections` registry guarded by `asyncio.Lock`. Register the han
 
 - [ ] **Step 3: Wire Docker build**
 
-Copy `fly/xiaoli_admin.py` and `fly/patch_admin.py` into `/opt/xiaozhi-esp32-server`, then run the patch script during image build.
+Build `/usr/local/bin/xiaoli-admin`, copy `fly/xiaoli_bridge.py` and `fly/patch_admin.py` into `/opt/xiaozhi-esp32-server`, then run the patch script during image build.
 
 ### Task 3: Nginx And Entrypoint Configuration
 
@@ -60,7 +62,7 @@ Copy `fly/xiaoli_admin.py` and `fly/patch_admin.py` into `/opt/xiaozhi-esp32-ser
 
 - [ ] **Step 1: Add admin defaults**
 
-Add `XIAOLI_ADMIN_ENABLED`, `XIAOLI_ADMIN_PORT`, and `ADMIN_PUBLIC_BASE_URL` to rendered defaults. Keep `ADMIN_ACCESS_TOKEN` and `ADMIN_SESSION_SECRET` out of committed files.
+Add `XIAOLI_ADMIN_ENABLED`, `XIAOLI_ADMIN_PORT`, `XIAOLI_BRIDGE_PORT`, and `ADMIN_PUBLIC_BASE_URL` to rendered defaults. Keep `ADMIN_SESSION_SECRET` and `LOGTO_APP_SECRET` out of committed files.
 
 - [ ] **Step 2: Render Nginx admin routes**
 
@@ -68,7 +70,7 @@ When admin is enabled, proxy `/admin` and `/admin/` to `127.0.0.1:${XIAOLI_ADMIN
 
 - [ ] **Step 3: Document secrets**
 
-Document required Fly secrets: `ADMIN_ACCESS_TOKEN` and `ADMIN_SESSION_SECRET`.
+Document required Fly secrets: `ADMIN_SESSION_SECRET` and `LOGTO_APP_SECRET`.
 
 ### Task 4: Tests And Verification
 
@@ -82,7 +84,7 @@ Add tests for enabled admin proxy and disabled admin 404 rendering.
 
 - [ ] **Step 2: Compile Python files**
 
-Run `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile fly/entrypoint.py fly/xiaoli_admin.py tests/test_entrypoint_security.py`.
+Run `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile fly/entrypoint.py fly/xiaoli_bridge.py tests/test_entrypoint_security.py`.
 
 - [ ] **Step 3: Run unit tests**
 
@@ -97,14 +99,14 @@ Run `flyctl deploy --build-only` or `flyctl deploy` after secrets are set, depen
 **Files:**
 - No source files.
 
-- [ ] **Step 1: Generate temporary admin secrets**
+- [ ] **Step 1: Generate admin session secret**
 
-Generate a random `ADMIN_ACCESS_TOKEN` and a random `ADMIN_SESSION_SECRET`.
+Generate a random `ADMIN_SESSION_SECRET`.
 
 - [ ] **Step 2: Set Fly secrets without printing secret values**
 
-Set `ADMIN_ACCESS_TOKEN` and `ADMIN_SESSION_SECRET` via `flyctl secrets set`.
+Set `ADMIN_SESSION_SECRET` and `LOGTO_APP_SECRET` via `flyctl secrets set`. Ensure obsolete local admin fallback secrets are unset.
 
 - [ ] **Step 3: Post-deploy smoke checks**
 
-Verify `/admin` redirects to `/admin/login`, `/admin/login` renders the Token form, `/admin/api/devices` rejects unauthenticated requests, and existing `/health`, OTA, and WebSocket routes still work.
+Verify `/admin` redirects into the Logto authorization flow, `/admin/api/devices` rejects unauthenticated requests, and existing `/health`, OTA, and WebSocket routes still work.

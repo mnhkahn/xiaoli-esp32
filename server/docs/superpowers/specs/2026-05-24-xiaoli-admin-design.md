@@ -6,23 +6,31 @@ Add a protected web admin console to the existing xiaoli server so the owner can
 
 ## Authentication
 
-The admin console uses a temporary fixed Token while Logto callback setup is blocked. The Token is provided through the `ADMIN_ACCESS_TOKEN` Fly secret, not hardcoded source values. Logto OIDC support remains in the server module as a fallback path when `ADMIN_ACCESS_TOKEN` is not configured.
+The admin console uses Logto OIDC only. There is no local credential fallback,
+and `/admin/login` always starts the Logto authorization-code flow.
 
 Required configuration:
 
 - `ADMIN_SESSION_SECRET`
-- `ADMIN_ACCESS_TOKEN`
+- `LOGTO_ENDPOINT`
+- `LOGTO_APP_ID`
+- `LOGTO_APP_SECRET`
 
-The server creates its own `xiaoli_admin_session` cookie after the correct Token is submitted at `/admin/login`. The submitted Token is compared server-side and is never stored in the browser.
+The server creates its own `xiaoli_admin_session` cookie after Logto callback
+validation and userinfo loading. `ADMIN_ALLOWED_USERS` can optionally restrict
+allowed Logto users by `sub`, email, username, or name.
 
 ## Architecture
 
-The current repository wraps the upstream `xiaozhi-esp32-server` image. The upstream WebSocket process already owns the device MCP bridge, so the admin feature is added inside the same Python process instead of as a separate sidecar.
+The current repository wraps the upstream `xiaozhi-esp32-server` image. The
+admin feature is implemented by a Go HTTP server. The upstream Python WebSocket
+process owns device MCP objects, so a localhost-only Python bridge exposes the
+minimal device/MCP/TTS operations the Go admin needs.
 
 Build-time patches will:
 
-- copy `xiaoli_admin.py` into `/opt/xiaozhi-esp32-server`;
-- patch `app.py` to start `XiaoliAdminServer` alongside the existing WebSocket and OTA services;
+- copy `xiaoli_bridge.py` into `/opt/xiaozhi-esp32-server`;
+- patch `app.py` to start `XiaoliBridgeServer` alongside the existing WebSocket and OTA services;
 - patch `WebSocketServer` to track online `ConnectionHandler` instances by `device_id`;
 - expose `/admin`, `/admin/login`, `/admin/callback`, `/admin/logout`, and `/admin/api/*` through Nginx.
 
@@ -51,7 +59,9 @@ If a requested tool is not exposed by the connected device, the UI shows that th
 
 ## Audit And Safety
 
-Every admin tool call logs timestamp, user identifier, device id, tool name, arguments, success/failure, and result summary to the server log. The admin Token and session cookies are never logged.
+Every admin tool call logs timestamp, user identifier, device id, tool name,
+arguments, success/failure, and result summary to the server log. Logto secrets
+and session cookies are never logged.
 
 Camera and microphone-related tool names require an explicit confirmation in the UI.
 
@@ -60,6 +70,7 @@ Camera and microphone-related tool names require an explicit confirmation in the
 Verification covers:
 
 - unit tests for environment rendering and Nginx admin proxy routes;
-- Python compile checks for the entrypoint and admin server code;
+- Go tests/build for the admin server;
+- Python compile checks for the entrypoint and bridge code;
 - local static checks where possible;
-- deploy verification that `/admin` shows the Token login flow and that unauthenticated `/admin/api/*` requests are rejected.
+- deploy verification that `/admin` redirects to Logto and that unauthenticated `/admin/api/*` requests are rejected.

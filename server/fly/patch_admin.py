@@ -6,33 +6,39 @@ APP_PATH = PROJECT_DIR / "app.py"
 WEBSOCKET_PATH = PROJECT_DIR / "core" / "websocket_server.py"
 
 
-def patch_app_py():
-    text = APP_PATH.read_text(encoding="utf-8")
-    if "from xiaoli_admin import XiaoliAdminServer" not in text:
+def patch_app_source(text: str) -> str:
+    if "from xiaoli_bridge import XiaoliBridgeServer" not in text:
+        if "from core.websocket_server import WebSocketServer\n" not in text:
+            raise RuntimeError("Cannot find WebSocketServer import to patch")
         text = text.replace(
             "from core.websocket_server import WebSocketServer\n",
-            "from core.websocket_server import WebSocketServer\nfrom xiaoli_admin import XiaoliAdminServer\n",
+            "from core.websocket_server import WebSocketServer\nfrom xiaoli_bridge import XiaoliBridgeServer\n",
+            1,
         )
 
     old = "    ota_server = SimpleHttpServer(config)\n    ota_task = asyncio.create_task(ota_server.start())\n"
     new = (
         "    ota_server = SimpleHttpServer(config)\n"
         "    ota_task = asyncio.create_task(ota_server.start())\n"
-        "    admin_server = XiaoliAdminServer(config, ws_server)\n"
-        "    admin_task = asyncio.create_task(admin_server.start()) if admin_server.enabled else None\n"
+        "    bridge_server = XiaoliBridgeServer(config, ws_server)\n"
+        "    bridge_task = asyncio.create_task(bridge_server.start()) if bridge_server.enabled else None\n"
     )
-    if old in text and "admin_server = XiaoliAdminServer(config, ws_server)" not in text:
-        text = text.replace(old, new)
+    if "bridge_server = XiaoliBridgeServer(config, ws_server)" not in text:
+        if old not in text:
+            raise RuntimeError("Cannot find OTA startup block to patch")
+        text = text.replace(old, new, 1)
 
     old_cancel = "        if ota_task:\n            ota_task.cancel()\n"
     new_cancel = (
         "        if ota_task:\n"
         "            ota_task.cancel()\n"
-        "        if admin_task:\n"
-        "            admin_task.cancel()\n"
+        "        if bridge_task:\n"
+        "            bridge_task.cancel()\n"
     )
-    if old_cancel in text and "if admin_task:" not in text:
-        text = text.replace(old_cancel, new_cancel)
+    if "bridge_task.cancel()" not in text:
+        if old_cancel not in text:
+            raise RuntimeError("Cannot find OTA cancellation block to patch")
+        text = text.replace(old_cancel, new_cancel, 1)
 
     old_wait = (
         "        await asyncio.wait(\n"
@@ -45,8 +51,8 @@ def patch_app_py():
         "        tasks = [stdin_task, ws_task]\n"
         "        if ota_task:\n"
         "            tasks.append(ota_task)\n"
-        "        if admin_task:\n"
-        "            tasks.append(admin_task)\n"
+        "        if bridge_task:\n"
+        "            tasks.append(bridge_task)\n"
         "        await asyncio.wait(\n"
         "            tasks,\n"
         "            timeout=3.0,\n"
@@ -54,14 +60,12 @@ def patch_app_py():
         "        )\n"
     )
     if old_wait in text and "tasks = [stdin_task, ws_task]" not in text:
-        text = text.replace(old_wait, new_wait)
+        text = text.replace(old_wait, new_wait, 1)
 
-    APP_PATH.write_text(text, encoding="utf-8")
+    return text
 
 
-def patch_websocket_server_py():
-    text = WEBSOCKET_PATH.read_text(encoding="utf-8")
-
+def patch_websocket_source(text: str) -> str:
     old_init = (
         "        self.auth = AuthManager(secret_key=secret_key, expire_seconds=expire_seconds)\n"
     )
@@ -71,7 +75,7 @@ def patch_websocket_server_py():
         "        self.active_connections_lock = asyncio.Lock()\n"
     )
     if old_init in text and "self.active_connections = {}" not in text:
-        text = text.replace(old_init, new_init)
+        text = text.replace(old_init, new_init, 1)
 
     marker = "    async def start(self):\n"
     methods = '''    async def register_connection(self, handler):
@@ -125,7 +129,7 @@ def patch_websocket_server_py():
 
 '''
     if marker in text and "async def register_connection" not in text:
-        text = text.replace(marker, methods + marker)
+        text = text.replace(marker, methods + marker, 1)
 
     old_handler = '''        handler = ConnectionHandler(
             self.config,
@@ -164,9 +168,19 @@ def patch_websocket_server_py():
             # 强制关闭连接（如果还没有关闭的话）
 '''
     if old_handler in text and "await self.register_connection(handler)" not in text:
-        text = text.replace(old_handler, new_handler)
+        text = text.replace(old_handler, new_handler, 1)
 
-    WEBSOCKET_PATH.write_text(text, encoding="utf-8")
+    return text
+
+
+def patch_app_py():
+    text = APP_PATH.read_text(encoding="utf-8")
+    APP_PATH.write_text(patch_app_source(text), encoding="utf-8")
+
+
+def patch_websocket_server_py():
+    text = WEBSOCKET_PATH.read_text(encoding="utf-8")
+    WEBSOCKET_PATH.write_text(patch_websocket_source(text), encoding="utf-8")
 
 
 def main():

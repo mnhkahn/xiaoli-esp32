@@ -19,7 +19,7 @@ log:
   data_dir: data
 
 delete_audio: true
-close_connection_no_voice_time: 120
+close_connection_no_voice_time: 3600
 tts_timeout: 10
 tool_call_timeout: 30
 enable_wakeup_words_response_cache: true

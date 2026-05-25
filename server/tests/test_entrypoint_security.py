@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 
 ENTRYPOINT_PATH = Path(__file__).resolve().parents[1] / "fly" / "entrypoint.py"
+DOCKERFILE_PATH = Path(__file__).resolve().parents[1] / "Dockerfile"
 SPEC = importlib.util.spec_from_file_location("entrypoint", ENTRYPOINT_PATH)
 entrypoint = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(entrypoint)
@@ -122,6 +123,95 @@ class EntryPointSecurityTest(unittest.TestCase):
         self.assertIn("location = /admin", values["ADMIN_NGINX_ROUTES"])
         self.assertIn("location /admin/", values["ADMIN_NGINX_ROUTES"])
         self.assertIn("proxy_pass http://127.0.0.1:8123", values["ADMIN_NGINX_ROUTES"])
+        self.assertIn("proxy_set_header Upgrade $http_upgrade", values["ADMIN_NGINX_ROUTES"])
+
+    def test_go_admin_process_starts_when_admin_enabled(self):
+        env = {
+            "ENABLE_SERVER_AUTH": "true",
+            "SERVER_AUTH_KEY": "0123456789abcdef0123456789abcdef",
+            "XIAOLI_ADMIN_ENABLED": "true",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            values = entrypoint.build_values()
+
+        commands = entrypoint.process_commands(values)
+
+        self.assertIn(["python", "app.py"], commands)
+        self.assertIn(["/usr/local/bin/xiaoli-admin"], commands)
+        self.assertIn(["nginx", "-g", "daemon off;"], commands)
+
+    def test_go_admin_process_is_skipped_when_admin_disabled(self):
+        env = {
+            "ENABLE_SERVER_AUTH": "true",
+            "SERVER_AUTH_KEY": "0123456789abcdef0123456789abcdef",
+            "XIAOLI_ADMIN_ENABLED": "false",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            values = entrypoint.build_values()
+
+        commands = entrypoint.process_commands(values)
+
+        self.assertIn(["python", "app.py"], commands)
+        self.assertNotIn(["/usr/local/bin/xiaoli-admin"], commands)
+        self.assertIn(["nginx", "-g", "daemon off;"], commands)
+
+    def test_connection_timeout_allows_idle_admin_connection(self):
+        env = {
+            "ENABLE_SERVER_AUTH": "true",
+            "SERVER_AUTH_KEY": "0123456789abcdef0123456789abcdef",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            values = entrypoint.build_values()
+
+        config = entrypoint.render_template(ENTRYPOINT_PATH.parent / "config.template.yaml", values)
+
+        self.assertIn("close_connection_no_voice_time: 3600", config)
+
+    def test_vision_route_uses_admin_proxy_when_admin_enabled(self):
+        env = {
+            "ENABLE_SERVER_AUTH": "true",
+            "SERVER_AUTH_KEY": "0123456789abcdef0123456789abcdef",
+            "XIAOLI_ADMIN_ENABLED": "true",
+            "XIAOLI_ADMIN_PORT": "8123",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            values = entrypoint.build_values()
+
+        nginx = entrypoint.render_template(ENTRYPOINT_PATH.parent / "nginx.conf", values)
+        vision_section = nginx.split("location /mcp/vision/ {", 1)[1].split("location / {", 1)[0]
+
+        self.assertIn("proxy_pass http://127.0.0.1:8123", vision_section)
+
+    def test_vision_route_uses_http_server_when_admin_disabled(self):
+        env = {
+            "ENABLE_SERVER_AUTH": "true",
+            "SERVER_AUTH_KEY": "0123456789abcdef0123456789abcdef",
+            "XIAOLI_ADMIN_ENABLED": "false",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            values = entrypoint.build_values()
+
+        nginx = entrypoint.render_template(ENTRYPOINT_PATH.parent / "nginx.conf", values)
+        vision_section = nginx.split("location /mcp/vision/ {", 1)[1].split("location / {", 1)[0]
+
+        self.assertIn("proxy_pass http://127.0.0.1:8003", vision_section)
+
+    def test_dockerfile_installs_and_applies_langsmith_patch(self):
+        dockerfile = DOCKERFILE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("pip install --no-cache-dir langsmith", dockerfile)
+        self.assertIn("COPY fly/xiaoli_langsmith.py", dockerfile)
+        self.assertIn("COPY fly/patch_langsmith.py", dockerfile)
+        self.assertIn("RUN python /fly/patch_langsmith.py", dockerfile)
+
+    def test_dockerfile_builds_go_admin_and_copies_bridge(self):
+        dockerfile = DOCKERFILE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("FROM golang:1.23", dockerfile)
+        self.assertIn("go build -o /out/xiaoli-admin ./cmd/xiaoli-admin", dockerfile)
+        self.assertIn("COPY --from=go-build /out/xiaoli-admin /usr/local/bin/xiaoli-admin", dockerfile)
+        self.assertIn("COPY fly/xiaoli_bridge.py /opt/xiaozhi-esp32-server/xiaoli_bridge.py", dockerfile)
+        self.assertNotIn("COPY fly/xiaoli_admin.py", dockerfile)
 
 
 if __name__ == "__main__":
