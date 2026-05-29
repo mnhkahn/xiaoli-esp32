@@ -143,7 +143,9 @@ func TestDashboardRestoresThreeTabControlLayout(t *testing.T) {
 		`id="streamViewer"`,
 		`id="streamImage"`,
 		`id="snapshot"`,
+		`id="streamResolution"`,
 		`id="speakText"`,
+		`id="speakStop"`,
 		`id="streamStart"`,
 		`id="streamStop"`,
 		`id="schedules"`,
@@ -193,6 +195,47 @@ func TestDashboardRestoresThreeTabControlLayout(t *testing.T) {
 	}
 	if !strings.Contains(scheduleSection, `id="schedules"`) || !strings.Contains(scheduleSection, `/admin/api/schedules`) {
 		t.Fatal("schedule tab should render schedules from the schedules API")
+	}
+	if !strings.Contains(html, `/admin/api/speak/stop`) {
+		t.Fatal("dashboard should wire speech stop control to the stop API")
+	}
+}
+
+func TestSpeakStopAPIForwardsToBridge(t *testing.T) {
+	var received map[string]string
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/bridge/speak/stop" {
+			t.Fatalf("path = %s, want /bridge/speak/stop", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatalf("decode bridge request: %v", err)
+		}
+		return jsonResponse(http.StatusOK, map[string]any{"ok": true, "status": "stopped"}), nil
+	})}
+
+	cfg := testConfig()
+	srv := NewServer(cfg)
+	srv.bridge = NewBridgeClient("http://bridge.local", httpClient)
+	session, err := srv.signer.sign(map[string]any{
+		"user": map[string]any{"sub": "logto-user"},
+		"iat":  cfg.now().Unix(),
+		"exp":  cfg.now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("sign session: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/speak/stop", strings.NewReader(`{"device_id":"device-1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: session})
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if received["device_id"] != "device-1" {
+		t.Fatalf("device_id = %q, want device-1", received["device_id"])
 	}
 }
 
@@ -277,9 +320,125 @@ func TestDashboardHasModelFreeSnapshotAction(t *testing.T) {
 		`await api("/admin/api/snapshot"`,
 		`resolution: $("snapshotResolution").value`,
 		`renderStreamImage((data.preview.images || [])[0]);`,
+		`id="streamResolution"`,
+		`value="qqvga"`,
+		`resolution: $("streamResolution").value`,
 	} {
 		if !strings.Contains(html, fragment) {
 			t.Fatalf("dashboard HTML missing snapshot fragment %s", fragment)
+		}
+	}
+}
+
+func TestStreamStartAPIInvokesCameraStreamWithResolution(t *testing.T) {
+	var received BridgeCallRequest
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/bridge/call" {
+			t.Fatalf("path = %s, want /bridge/call", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatalf("decode bridge request: %v", err)
+		}
+		return jsonResponse(http.StatusOK, BridgeCallResult{OK: true, Raw: `{"ok":true}`, Result: map[string]any{"ok": true}}), nil
+	})}
+
+	cfg := testConfig()
+	srv := NewServer(cfg)
+	srv.bridge = NewBridgeClient("http://bridge.local", httpClient)
+	session, err := srv.signer.sign(map[string]any{
+		"user": map[string]any{"sub": "logto-user"},
+		"iat":  cfg.now().Unix(),
+		"exp":  cfg.now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("sign session: %v", err)
+	}
+	body := `{"device_id":"device-1","fps":3,"duration_sec":60,"resolution":"qvga"}`
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/stream/start", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: session})
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if received.DeviceID != "device-1" || received.Tool != "self.camera.start_stream" {
+		t.Fatalf("unexpected bridge request: %#v", received)
+	}
+	if received.Arguments["resolution"] != "qvga" {
+		t.Fatalf("resolution argument = %#v, want qvga", received.Arguments["resolution"])
+	}
+	if received.Arguments["fps"] != float64(3) && received.Arguments["fps"] != 3 {
+		t.Fatalf("fps argument = %#v, want 3", received.Arguments["fps"])
+	}
+}
+
+func TestStreamStartAPIRequestsLanTransportByDefault(t *testing.T) {
+	var received BridgeCallRequest
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatalf("decode bridge request: %v", err)
+		}
+		return jsonResponse(http.StatusOK, BridgeCallResult{
+			OK:     true,
+			Raw:    `{"ok":true,"transport":"lan","mjpeg_url":"http://192.168.1.50:8081/stream"}`,
+			Result: map[string]any{"ok": true, "transport": "lan", "mjpeg_url": "http://192.168.1.50:8081/stream"},
+		}), nil
+	})}
+
+	cfg := testConfig()
+	srv := NewServer(cfg)
+	srv.bridge = NewBridgeClient("http://bridge.local", httpClient)
+	session, err := srv.signer.sign(map[string]any{
+		"user": map[string]any{"sub": "logto-user"},
+		"iat":  cfg.now().Unix(),
+		"exp":  cfg.now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("sign session: %v", err)
+	}
+	body := `{"device_id":"device-1","fps":1,"duration_sec":30,"resolution":"vga"}`
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/stream/start", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: session})
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if received.Arguments["transport"] != "lan" {
+		t.Fatalf("transport argument = %#v, want lan", received.Arguments["transport"])
+	}
+	var payload BridgeCallResult
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	result, ok := payload.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("response result has unexpected type: %#v", payload.Result)
+	}
+	if stringValue(result["mjpeg_url"]) != "http://192.168.1.50:8081/stream" {
+		t.Fatalf("mjpeg_url was not returned to dashboard: %#v", result)
+	}
+}
+
+func TestDashboardCanRenderLanMjpegStream(t *testing.T) {
+	html := dashboardHTML(map[string]any{"sub": "logto-user"})
+
+	for _, fragment := range []string{
+		`let directStreamURL = "";`,
+		`function renderDirectStream(url)`,
+		`renderDirectStream(result.mjpeg_url);`,
+		`transport: "lan"`,
+		`setStreamStatus("局域网直连播放中")`,
+		`setStreamStatus("退回后台中转流")`,
+	} {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("dashboard HTML missing LAN stream fragment %s", fragment)
 		}
 	}
 }
@@ -294,6 +453,8 @@ func TestDashboardBuildsDefaultToolArgumentsFromSchema(t *testing.T) {
 		`if (schema.minimum !== undefined) return schema.minimum;`,
 		`if (schema.type === "array") return [];`,
 		`function updateArgsFromTool()`,
+		`const tool = tools.find(t => ((t.function || {}).name || "") === toolName);`,
+		`const params = ((tool || {}).function || {}).parameters || {};`,
 		`const required = new Set(params.required || []);`,
 		`if (required.has(key) || schema.default !== undefined || Object.keys(props).length <= 8)`,
 		`$("args").value = JSON.stringify(args, null, 2);`,
@@ -303,6 +464,44 @@ func TestDashboardBuildsDefaultToolArgumentsFromSchema(t *testing.T) {
 		if !strings.Contains(html, fragment) {
 			t.Fatalf("dashboard HTML missing schema argument fragment %s", fragment)
 		}
+	}
+}
+
+func TestNormalizeAdminToolsTranslatesRawMCPTools(t *testing.T) {
+	tools := normalizeAdminTools([]map[string]any{
+		{
+			"name":        "self.camera.snapshot",
+			"description": "拍照",
+			"inputSchema": map[string]any{
+				"type":     "object",
+				"required": []any{"resolution"},
+				"properties": map[string]any{
+					"resolution": map[string]any{"type": "string", "default": "qvga"},
+				},
+			},
+		},
+		{"description": "missing name"},
+	})
+
+	if len(tools) != 1 {
+		t.Fatalf("len(tools) = %d, want 1", len(tools))
+	}
+	fn, ok := tools[0]["function"].(map[string]any)
+	if !ok {
+		t.Fatalf("function has unexpected type: %#v", tools[0]["function"])
+	}
+	if fn["name"] != "self.camera.snapshot" || fn["description"] != "拍照" {
+		t.Fatalf("unexpected function metadata: %#v", fn)
+	}
+	params, ok := fn["parameters"].(map[string]any)
+	if !ok {
+		t.Fatalf("parameters has unexpected type: %#v", fn["parameters"])
+	}
+	if params["type"] != "object" {
+		t.Fatalf("parameters type = %#v, want object", params["type"])
+	}
+	if tools[0]["type"] != "function" {
+		t.Fatalf("tool type = %#v, want function", tools[0]["type"])
 	}
 }
 
@@ -587,6 +786,38 @@ func TestInternalStreamFrameRequiresTokenAndPublishesLatest(t *testing.T) {
 	latest := srv.stream.latest("device-1")
 	if latest == nil || latest.Seq != "7" {
 		t.Fatalf("latest stream event = %#v", latest)
+	}
+}
+
+func TestInternalLatestImageRequiresTokenAndReturnsNewestImage(t *testing.T) {
+	cfg := testConfig()
+	current := cfg.Now()
+	cfg.Now = func() time.Time { return current }
+	srv := NewServer(cfg)
+	srv.storeVisionImage("device-1", "image/jpeg", []byte("old-image"))
+	current = current.Add(time.Second)
+	srv.storeVisionImage("device-1", "image/png", []byte("new-image"))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/internal/images/latest?device_id=device-1", nil)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status without token = %d, want %d", rr.Code, http.StatusUnauthorized)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/internal/images/latest?device_id=device-1", nil)
+	req.Header.Set("X-Xiaoli-Internal-Token", cfg.InternalStreamToken)
+	rr = httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status with token = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if got := rr.Header().Get("Content-Type"); got != "image/png" {
+		t.Fatalf("Content-Type = %q, want image/png", got)
+	}
+	if got := rr.Body.String(); got != "new-image" {
+		t.Fatalf("body = %q, want latest image", got)
 	}
 }
 

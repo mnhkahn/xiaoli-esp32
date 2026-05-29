@@ -46,6 +46,8 @@ type AdminServer struct {
 	bridge      *BridgeClient
 	httpClient  *http.Client
 	stream      *streamHub
+	audioStore  *audioStore
+	deviceHub   *DeviceHub
 	imagesMu    sync.Mutex
 	images      map[string]imageRecord
 	imagesByDev map[string][]string
@@ -74,12 +76,20 @@ func NewServer(cfg Config) *AdminServer {
 		cfg.SessionMaxAge = 7 * 24 * time.Hour
 	}
 	client := &http.Client{Timeout: 125 * time.Second}
+	stream := newStreamHub()
+	audioStore := newAudioStore(cfg.now)
+	asr := newOpenAITranscriber(cfg)
+	llm := newGoLLMClient(cfg)
+	vision := newGoVisionClient(cfg)
+	tts := newHTTPSpeechSynthesizer(cfg, nil)
 	s := &AdminServer{
 		cfg:         cfg,
 		signer:      newSigner(cfg.SessionSecret, cfg.now),
 		httpClient:  client,
 		bridge:      NewBridgeClient(cfg.BridgeBaseURL, client),
-		stream:      newStreamHub(),
+		stream:      stream,
+		audioStore:  audioStore,
+		deviceHub:   NewDeviceHub(cfg, stream, audioStore, asr, llm, vision, tts),
 		images:      map[string]imageRecord{},
 		imagesByDev: map[string][]string{},
 	}
@@ -94,10 +104,20 @@ func (s *AdminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Expires", "0")
 	}
 	switch {
+	case r.URL.Path == "/health":
+		s.handleHealth(w, r)
+	case r.URL.Path == "/xiaozhi/ota/" || r.URL.Path == "/xiaozhi/ota":
+		s.handleXiaozhiOTA(w, r)
+	case r.URL.Path == "/xiaozhi/v1/" || r.URL.Path == "/xiaozhi/v1":
+		s.handleXiaozhiWebSocket(w, r)
+	case strings.HasPrefix(r.URL.Path, "/xiaoli/audio/"):
+		s.handleDeviceAudio(w, r)
 	case strings.HasPrefix(r.URL.Path, "/mcp/vision/"):
 		s.handleVisionProxy(w, r)
 	case r.URL.Path == "/admin/internal/stream/frame":
 		s.handleInternalStreamFrame(w, r)
+	case r.URL.Path == "/admin/internal/images/latest":
+		s.handleInternalLatestImage(w, r)
 	case r.URL.Path == "/admin" || r.URL.Path == "/admin/":
 		s.handleIndex(w, r)
 	case r.URL.Path == "/admin/login":
@@ -118,6 +138,8 @@ func (s *AdminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.withUser(w, r, s.handleSchedules)
 	case r.URL.Path == "/admin/api/speak":
 		s.withUser(w, r, s.handleSpeak)
+	case r.URL.Path == "/admin/api/speak/stop":
+		s.withUser(w, r, s.handleSpeakStop)
 	case r.URL.Path == "/admin/api/snapshot":
 		s.withUser(w, r, s.handleSnapshot)
 	case r.URL.Path == "/admin/api/stream/start":
@@ -334,7 +356,7 @@ func (s *AdminServer) handleMe(w http.ResponseWriter, r *http.Request, user map[
 }
 
 func (s *AdminServer) handleDevices(w http.ResponseWriter, r *http.Request, user map[string]any) {
-	devices, err := s.bridge.Devices(r.Context())
+	devices, err := s.deviceController().Devices(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
@@ -343,12 +365,39 @@ func (s *AdminServer) handleDevices(w http.ResponseWriter, r *http.Request, user
 }
 
 func (s *AdminServer) handleTools(w http.ResponseWriter, r *http.Request, user map[string]any) {
-	result, err := s.bridge.Tools(r.Context(), r.URL.Query().Get("device_id"))
+	result, err := s.deviceController().Tools(r.Context(), r.URL.Query().Get("device_id"))
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
 	}
+	result.Tools = normalizeAdminTools(result.Tools)
 	writeJSON(w, http.StatusOK, result)
+}
+
+func normalizeAdminTools(tools []map[string]any) []map[string]any {
+	normalized := make([]map[string]any, 0, len(tools))
+	for _, tool := range tools {
+		name := strings.TrimSpace(stringValue(tool["name"]))
+		if name == "" {
+			continue
+		}
+		parameters := tool["inputSchema"]
+		if parameters == nil {
+			parameters = map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			}
+		}
+		normalized = append(normalized, map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        name,
+				"description": stringValue(tool["description"]),
+				"parameters":  parameters,
+			},
+		})
+	}
+	return normalized
 }
 
 func (s *AdminServer) handleCall(w http.ResponseWriter, r *http.Request, user map[string]any) {
@@ -367,7 +416,7 @@ func (s *AdminServer) handleCall(w http.ResponseWriter, r *http.Request, user ma
 	}
 	request.Timeout = normalizeMCPTimeout(request.Tool, request.Timeout)
 	started := s.cfg.now()
-	result, err := s.bridge.Call(r.Context(), request)
+	result, err := s.deviceController().Call(r.Context(), request)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})
 		return
@@ -428,7 +477,31 @@ func (s *AdminServer) handleSpeak(w http.ResponseWriter, r *http.Request, user m
 		http.Error(w, "device_id and text are required", http.StatusBadRequest)
 		return
 	}
-	result, err := s.bridge.Speak(r.Context(), request.DeviceID, request.Text)
+	result, err := s.deviceController().Speak(r.Context(), request.DeviceID, request.Text)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *AdminServer) handleSpeakStop(w http.ResponseWriter, r *http.Request, user map[string]any) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var request struct {
+		DeviceID string `json:"device_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(request.DeviceID) == "" {
+		http.Error(w, "device_id is required", http.StatusBadRequest)
+		return
+	}
+	result, err := s.deviceController().StopSpeak(r.Context(), request.DeviceID)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})
 		return
@@ -455,7 +528,7 @@ func (s *AdminServer) handleSnapshot(w http.ResponseWriter, r *http.Request, use
 	}
 	resolution := normalizeSnapshotResolution(request.Resolution)
 	started := s.cfg.now()
-	result, err := s.bridge.Call(r.Context(), BridgeCallRequest{
+	result, err := s.deviceController().Call(r.Context(), BridgeCallRequest{
 		DeviceID: request.DeviceID,
 		Tool:     "self.camera.snapshot",
 		Arguments: map[string]any{
@@ -505,8 +578,10 @@ func (s *AdminServer) handleCameraStreamTool(w http.ResponseWriter, r *http.Requ
 	if tool == "self.camera.start_stream" {
 		args["fps"] = clampInt(body["fps"], 1, 3, 1)
 		args["duration_sec"] = clampInt(body["duration_sec"], 1, 60, 30)
+		args["resolution"] = normalizeStreamResolution(stringValue(body["resolution"]))
+		args["transport"] = normalizeStreamTransport(firstNonEmptyString(stringValue(body["transport"]), "lan"))
 	}
-	result, err := s.bridge.Call(r.Context(), BridgeCallRequest{
+	result, err := s.deviceController().Call(r.Context(), BridgeCallRequest{
 		DeviceID:  deviceID,
 		Tool:      tool,
 		Arguments: args,
@@ -709,6 +784,24 @@ func normalizeSnapshotResolution(value string) string {
 	}
 }
 
+func normalizeStreamResolution(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "qqvga", "qvga", "vga", "svga":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "qqvga"
+	}
+}
+
+func normalizeStreamTransport(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "lan", "remote", "auto":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "lan"
+	}
+}
+
 func dashboardHTML(user map[string]any) string {
 	userLabel := html.EscapeString(firstNonEmpty(user, "email", "name", "sub"))
 	return `<!doctype html>
@@ -808,6 +901,12 @@ func dashboardHTML(user map[string]any) string {
             <option value="legacy_vga">旧版 640x480</option>
           </select>
           <button id="snapshot">拍照</button>
+          <select id="streamResolution" aria-label="视频清晰度">
+            <option value="qqvga" selected>极速 160x120</option>
+            <option value="qvga">低清 320x240</option>
+            <option value="vga">标准 640x480</option>
+            <option value="svga">清晰 800x600</option>
+          </select>
           <button id="streamStart" class="primary">开始视频流</button>
           <button id="streamStop">停止视频流</button>
           <span id="streamStatus" class="muted">等待开始</span>
@@ -820,7 +919,10 @@ func dashboardHTML(user map[string]any) string {
       <div id="audioTab" class="tab-panel" hidden>
         <label class="muted" for="speakText">要发送给设备播放的文字</label>
         <textarea id="speakText" placeholder="输入要播放的文字"></textarea>
-        <button id="speak" class="primary">发送语音文本</button>
+        <div class="row">
+          <button id="speak" class="primary">发送语音文本</button>
+          <button id="speakStop">停止语音</button>
+        </div>
         <pre id="speakOutput">等待发送...</pre>
       </div>
       <div id="scheduleTab" class="tab-panel" hidden>
@@ -837,6 +939,7 @@ func dashboardHTML(user map[string]any) string {
     let devices = [];
     let tools = [];
     let streamSocket = null;
+    let directStreamURL = "";
 
     async function api(url, options = {}) {
       const res = await fetch(url, { credentials: "same-origin", ...options });
@@ -886,6 +989,25 @@ func dashboardHTML(user map[string]any) string {
       $("streamViewer").classList.add("has-frame");
     }
 
+    function renderDirectStream(url) {
+      if (!url) return;
+      directStreamURL = url;
+      const separator = url.includes("?") ? "&" : "?";
+      $("streamImage").onerror = async () => {
+        if (!directStreamURL) return;
+        directStreamURL = "";
+        setStreamStatus("退回后台中转流");
+        try {
+          await startRelayedStream(selectedDevice());
+        } catch (err) {
+          setStreamStatus(String(err));
+        }
+      };
+      $("streamImage").src = url + separator + "ts=" + Date.now();
+      $("streamViewer").classList.add("has-frame");
+      setStreamStatus("局域网直连播放中");
+    }
+
     async function loadDevices() {
       const data = await api("/admin/api/devices");
       devices = data.devices || [];
@@ -907,8 +1029,8 @@ func dashboardHTML(user map[string]any) string {
       const data = await api("/admin/api/tools?device_id=" + encodeURIComponent(id));
       tools = data.tools || [];
       $("tool").innerHTML = tools.map(t => {
-        const fn = t.function || {};
-        return "<option value=\"" + (fn.name || "") + "\">" + (fn.name || "") + "</option>";
+        const name = ((t.function || {}).name || "");
+        return "<option value=\"" + name + "\">" + name + "</option>";
       }).join("");
       updateArgsFromTool();
     }
@@ -1006,6 +1128,41 @@ func dashboardHTML(user map[string]any) string {
         showSpeak(data);
       }).catch(err => showSpeak(String(err)));
     };
+    $("speakStop").onclick = async () => {
+      await withBusy($("speakStop"), "停止中...", async () => {
+        const data = await api("/admin/api/speak/stop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ device_id: selectedDevice() }),
+        });
+        showSpeak(data);
+      }).catch(err => showSpeak(String(err)));
+    };
+    async function startRelayedStream(id) {
+      if (!id) throw new Error("没有选择在线设备");
+      if (streamSocket) streamSocket.close();
+      directStreamURL = "";
+      const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+      streamSocket = new WebSocket(scheme + "//" + location.host + "/admin/ws/stream?device_id=" + encodeURIComponent(id));
+      streamSocket.onopen = () => setStreamStatus("等待画面...");
+      streamSocket.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.image) {
+          $("streamImage").onerror = null;
+          renderStreamImage(data.image);
+          setStreamStatus("后台中转播放中");
+        }
+      };
+      streamSocket.onerror = () => setStreamStatus("视频连接异常");
+      streamSocket.onclose = () => {
+        if (!directStreamURL) setStreamStatus("视频连接已关闭");
+      };
+      await api("/admin/api/stream/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ device_id: id, fps: 1, duration_sec: 30, resolution: $("streamResolution").value, transport: "remote" }),
+      });
+    }
     async function captureSnapshot() {
       const id = selectedDevice();
       if (!id) throw new Error("没有选择在线设备");
@@ -1029,31 +1186,32 @@ func dashboardHTML(user map[string]any) string {
         const id = selectedDevice();
         if (!id) throw new Error("没有选择在线设备");
         if (streamSocket) streamSocket.close();
+        directStreamURL = "";
+        $("streamImage").onerror = null;
         $("streamViewer").classList.remove("has-frame");
-        setStreamStatus("连接视频流...");
-        const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-        streamSocket = new WebSocket(scheme + "//" + location.host + "/admin/ws/stream?device_id=" + encodeURIComponent(id));
-        streamSocket.onopen = () => setStreamStatus("等待画面...");
-        streamSocket.onmessage = (event) => {
-          const data = JSON.parse(event.data);
-          if (data.image) {
-            renderStreamImage(data.image);
-            setStreamStatus("播放中");
-          }
-        };
-        streamSocket.onerror = () => setStreamStatus("视频连接异常");
-        streamSocket.onclose = () => setStreamStatus("视频连接已关闭");
-        await api("/admin/api/stream/start", {
+        $("streamImage").src = "";
+        setStreamStatus("连接局域网直连流...");
+        const response = await api("/admin/api/stream/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ device_id: id, fps: 1, duration_sec: 30 }),
+          body: JSON.stringify({ device_id: id, fps: 1, duration_sec: 30, resolution: $("streamResolution").value, transport: "lan" }),
         });
+        const result = response.result || {};
+        show(response);
+        if (result.mjpeg_url) {
+          renderDirectStream(result.mjpeg_url);
+          return;
+        }
+        setStreamStatus("退回后台中转流");
+        await startRelayedStream(id);
       }).catch(err => setStreamStatus(String(err)));
     };
     $("streamStop").onclick = async () => {
       await withBusy($("streamStop"), "停止中...", async () => {
         const id = selectedDevice();
         if (streamSocket) streamSocket.close();
+        directStreamURL = "";
+        $("streamImage").onerror = null;
         await api("/admin/api/stream/stop", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1088,6 +1246,10 @@ func (s *AdminServer) handleVisionProxy(w http.ResponseWriter, r *http.Request) 
 	deviceID := r.Header.Get("device-id")
 	if r.URL.Path == "/mcp/vision/snapshot" {
 		s.handleVisionSnapshot(w, r, body, contentType, deviceID)
+		return
+	}
+	if r.URL.Path == "/mcp/vision/explain" && s.cfg.DirectDeviceServer {
+		s.handleVisionExplain(w, r, body, contentType, deviceID)
 		return
 	}
 	if r.URL.Path == "/mcp/vision/stream/frame" {
@@ -1217,6 +1379,30 @@ func (s *AdminServer) handleInternalStreamFrame(w http.ResponseWriter, r *http.R
 		"timestamp_ms": request.TimestampMS,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "seq": event.Seq, "stream_id": event.StreamID})
+}
+
+func (s *AdminServer) handleInternalLatestImage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if s.cfg.InternalStreamToken == "" || !hmac.Equal([]byte(r.Header.Get("X-Xiaoli-Internal-Token")), []byte(s.cfg.InternalStreamToken)) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	deviceID := strings.TrimSpace(r.URL.Query().Get("device_id"))
+	if deviceID == "" {
+		http.Error(w, "device_id is required", http.StatusBadRequest)
+		return
+	}
+	record := s.recentDeviceImageRecord(deviceID, time.Unix(0, 0))
+	if record == nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", record.ContentType)
+	_, _ = w.Write(record.Body)
 }
 
 type extractedImage struct {

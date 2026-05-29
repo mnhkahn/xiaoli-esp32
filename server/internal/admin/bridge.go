@@ -92,6 +92,15 @@ func (c *BridgeClient) Speak(ctx context.Context, deviceID string, text string) 
 	return response, nil
 }
 
+func (c *BridgeClient) StopSpeak(ctx context.Context, deviceID string) (map[string]any, error) {
+	request := map[string]any{"device_id": deviceID}
+	var response map[string]any
+	if err := c.postJSON(ctx, "/bridge/speak/stop", request, &response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
 func (c *BridgeClient) getJSON(ctx context.Context, path string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {

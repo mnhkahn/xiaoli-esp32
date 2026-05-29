@@ -1,14 +1,15 @@
 # Xiaoli Server on Fly.io
 
-This directory deploys a server-only xiaozhi backend to Fly.io.
+This directory deploys a Go-only Xiaoli device/admin backend to Fly.io.
 
-The container runs the upstream `xiaozhi-esp32-server` image and adds an Nginx
-front proxy so Fly can expose both services on one HTTPS hostname:
+The container runs a single Go process on port `8080`:
 
-- `https://<app>.fly.dev/xiaozhi/ota/` -> internal HTTP/OTA service on `8003`
-- `wss://<app>.fly.dev/xiaozhi/v1/` -> internal WebSocket service on `8000`
-- `https://<app>.fly.dev/mcp/vision/explain` -> internal vision service on `8003`
-- `https://<app>.fly.dev/admin` -> Go admin console on `8004`
+- `https://<app>.fly.dev/xiaozhi/ota/` issues the board WebSocket config
+- `wss://<app>.fly.dev/xiaozhi/v1/` accepts the board WebSocket connection and MCP calls
+- `https://<app>.fly.dev/mcp/vision/snapshot` and `/mcp/vision/stream/frame` receive camera uploads
+- `https://<app>.fly.dev/admin` serves the Admin console
+- Voice chat receives board Opus audio, runs ASR -> LLM/VLLM -> TTS, and asks the board to play Ogg Opus through `self.audio_speaker.play_ogg_url`
+- Admin text playback uses the same Go TTS/playback path
 
 ## First Deploy
 
@@ -47,9 +48,8 @@ rendered into the upstream `server.auth.allowed_devices` list, because that
 upstream list bypasses token verification. Keep `SERVER_AUTH_KEY` as a Fly
 secret and rotate it if it is ever exposed.
 
-The admin console is implemented in Go and talks to the upstream Python
-xiaozhi process through a localhost-only bridge on `127.0.0.1:8005`. Logto is
-the only login path. Configure Logto with callback URL:
+The admin console and device protocol are implemented in Go. Logto is the only
+login path. Configure Logto with callback URL:
 
 ```text
 https://xiaoli-server.fly.dev/admin/callback
@@ -94,12 +94,6 @@ Then flash the board.
 
 ## Configuration
 
-Runtime config is rendered from `fly/config.template.yaml` into:
-
-```text
-/opt/xiaozhi-esp32-server/data/.config.yaml
-```
-
 Important environment variables:
 
 - `PUBLIC_BASE_URL`: public HTTPS base URL, for example `https://xiaoli-server.fly.dev`
@@ -108,8 +102,8 @@ Important environment variables:
 - `SERVER_AUTH_KEY`: signing key for WebSocket and vision tokens; set as a secret
 - `SERVER_AUTH_ALLOWED_DEVICE_IDS`: optional upstream bypass list; normally leave empty so token verification is not bypassed
 - `XIAOLI_ADMIN_ENABLED`: enables the admin console when `true`
-- `XIAOLI_ADMIN_PORT`: internal admin port; default `8004`
-- `XIAOLI_BRIDGE_PORT`: localhost-only Python bridge port used by the Go admin; default `8005`
+- `XIAOLI_ADMIN_PORT`: Go server port; default `8080` on Fly
+- `XIAOLI_DIRECT_DEVICE_SERVER`: when `true`, Admin controls the board directly through Go instead of the old bridge
 - `ADMIN_SESSION_SECRET`: signing key for admin cookies; set as a secret
 - `LOGTO_ENDPOINT`: Logto tenant endpoint, for example `https://fpilyb.logto.app/`
 - `LOGTO_APP_ID`: Logto application ID
@@ -136,12 +130,19 @@ Important environment variables:
 - `OPENROUTER_API_KEY`: used by `OpenRouterLLM` and `OpenRouterVLLM`
 - `OPENROUTER_LLM_MODEL`: default `openrouter/free`
 - `OPENROUTER_VLLM_MODEL`: default `openrouter/free`
-- `SILICONFLOW_API_KEY`: used by `SiliconFlowASR`, `SiliconFlowLLM`, `SiliconFlowVLLM`, and `SiliconFlowTTS`
+- `SILICONFLOW_API_KEY`: used by the Go ASR/LLM/VLLM/TTS clients by default
 - `SILICONFLOW_LLM_MODEL`: default `Qwen/Qwen3-8B`
 - `SILICONFLOW_VLLM_MODEL`: default `Qwen/Qwen3-VL-8B-Instruct`
 - `SILICONFLOW_ASR_MODEL`: default `FunAudioLLM/SenseVoiceSmall`
 - `SILICONFLOW_TTS_MODEL`: default `FunAudioLLM/CosyVoice2-0.5B`
 - `SILICONFLOW_TTS_VOICE`: default `FunAudioLLM/CosyVoice2-0.5B:anna`
+- `XIAOLI_GO_ASR_URL`: OpenAI-compatible transcription endpoint; default `https://api.siliconflow.cn/v1/audio/transcriptions`
+- `XIAOLI_GO_ASR_MODEL`: default comes from `SILICONFLOW_ASR_MODEL`
+- `XIAOLI_GO_LLM_URL`: OpenAI-compatible chat completions endpoint; default `https://api.siliconflow.cn/v1/chat/completions`
+- `XIAOLI_GO_LLM_MODEL`: default comes from `SILICONFLOW_LLM_MODEL`
+- `XIAOLI_GO_VLLM_URL`: OpenAI-compatible vision chat endpoint; default `https://api.siliconflow.cn/v1/chat/completions`
+- `XIAOLI_GO_VLLM_MODEL`: default comes from `SILICONFLOW_VLLM_MODEL`
+- `XIAOLI_GO_TTS_RESPONSE_FORMAT`: default `opus`; keep this as Ogg Opus for board playback
 - `GROQ_API_KEY`: used only if switching back to `GroqASR`
 - `OPENAI_API_KEY`: used only if switching back to `OpenaiASR`
 - `ZHIPU_API_KEY`: used only if switching back to `ChatGLMLLM` / `ChatGLMVLLM`

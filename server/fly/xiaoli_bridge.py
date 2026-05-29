@@ -46,6 +46,7 @@ class XiaoliBridgeServer:
         )
         self.mcp_ready_wait_seconds = float(os.environ.get("ADMIN_MCP_READY_WAIT_SECONDS", "5"))
         self.speak_wait_timeout = float(os.environ.get("ADMIN_SPEAK_WAIT_TIMEOUT_SECONDS", "300"))
+        self.speak_failsafe_seconds = float(os.environ.get("ADMIN_SPEAK_FAILSAFE_SECONDS", "45"))
 
     async def start(self):
         if not self.enabled:
@@ -59,6 +60,7 @@ class XiaoliBridgeServer:
                 web.get("/bridge/tools", self.handle_tools),
                 web.post("/bridge/call", self.handle_call),
                 web.post("/bridge/speak", self.handle_speak),
+                web.post("/bridge/speak/stop", self.handle_speak_stop),
             ]
         )
 
@@ -144,6 +146,21 @@ class XiaoliBridgeServer:
                 "tts_ready": True,
             }
         )
+
+    async def handle_speak_stop(self, request: web.Request) -> web.Response:
+        try:
+            body = await request.json()
+        except Exception:
+            raise web.HTTPBadRequest(text="invalid json")
+        device_id = str(body.get("device_id") or "").strip()
+        if not device_id:
+            raise web.HTTPBadRequest(text="device_id is required")
+
+        handler = await self.ws_server.get_admin_connection(device_id)
+        if not handler:
+            raise web.HTTPNotFound(text="device is not online")
+        await self._stop_speaking(handler, abort=True)
+        return _json_response({"ok": True, "status": "stopped", "device_id": device_id})
 
     def publish_stream_frame_base64(
         self,
@@ -305,7 +322,60 @@ class XiaoliBridgeServer:
                 content_type=ContentType.ACTION,
             )
         )
+        if self.speak_failsafe_seconds > 0:
+            asyncio.create_task(self._speak_failsafe(handler, sentence_id, self.speak_failsafe_seconds))
         return sentence_id
+
+    async def _speak_failsafe(self, handler: Any, sentence_id: str, delay_seconds: float):
+        await asyncio.sleep(delay_seconds)
+        if getattr(handler, "sentence_id", None) != sentence_id:
+            return
+        if not getattr(handler, "client_is_speaking", False):
+            return
+        if not self._tts_queues_idle(getattr(handler, "tts", None)):
+            return
+
+        self.logger.bind(tag=TAG).error(
+            f"Admin speech did not finish within {delay_seconds:.1f}s; sending tts stop"
+        )
+        await self._stop_speaking(handler, abort=True)
+
+    def _tts_queues_idle(self, tts: Any) -> bool:
+        if not tts:
+            return True
+        for attr in ("tts_text_queue", "tts_audio_queue"):
+            queue = getattr(tts, attr, None)
+            if not queue:
+                continue
+            qsize = getattr(queue, "qsize", None)
+            if callable(qsize):
+                try:
+                    if qsize() > 0:
+                        return False
+                except Exception:
+                    return False
+        return True
+
+    async def _stop_speaking(self, handler: Any, abort: bool = False):
+        if abort:
+            handler.client_abort = True
+        handler.client_is_speaking = False
+        self._drain_tts_queues(getattr(handler, "tts", None))
+        await send_tts_message(handler, "stop")
+
+    def _drain_tts_queues(self, tts: Any):
+        if not tts:
+            return
+        for attr in ("tts_text_queue", "tts_audio_queue"):
+            queue = getattr(tts, attr, None)
+            get_nowait = getattr(queue, "get_nowait", None)
+            if not callable(get_nowait):
+                continue
+            while True:
+                try:
+                    get_nowait()
+                except Exception:
+                    break
 
     def _try_json(self, value: Any) -> Any:
         if not isinstance(value, str):

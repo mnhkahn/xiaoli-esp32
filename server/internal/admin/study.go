@@ -95,7 +95,8 @@ func (s *AdminServer) inStudyMonitorWindow(checkedAt time.Time) bool {
 }
 
 func (s *AdminServer) runStudyMonitorOnce(ctx context.Context, checkedAt time.Time) error {
-	devices, err := s.bridge.Devices(ctx)
+	controller := s.deviceController()
+	devices, err := controller.Devices(ctx)
 	if err != nil {
 		return err
 	}
@@ -104,7 +105,7 @@ func (s *AdminServer) runStudyMonitorOnce(ctx context.Context, checkedAt time.Ti
 	}
 	deviceID := devices[0].DeviceID
 	started := s.cfg.now()
-	result, err := s.bridge.Call(ctx, BridgeCallRequest{
+	result, err := controller.Call(ctx, BridgeCallRequest{
 		DeviceID:  deviceID,
 		Tool:      s.cfg.StudyMonitorCameraTool,
 		Arguments: map[string]any{"question": studyMonitorPrompt},
@@ -116,7 +117,7 @@ func (s *AdminServer) runStudyMonitorOnce(ctx context.Context, checkedAt time.Ti
 	decision := s.parseStudyDecision(result.Result)
 	reminderResult := ""
 	if decision.NeedReminder {
-		if response, err := s.bridge.Speak(ctx, deviceID, decision.ReminderText); err == nil {
+		if response, err := controller.Speak(ctx, deviceID, decision.ReminderText); err == nil {
 			encoded, _ := json.Marshal(response)
 			reminderResult = string(encoded)
 		} else {

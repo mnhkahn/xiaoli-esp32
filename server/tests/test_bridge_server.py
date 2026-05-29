@@ -243,6 +243,63 @@ class BridgeServerTest(unittest.TestCase):
         self.assertEqual(handler.tts.stored[0][1], "请坐直。")
         self.assertEqual(handler.sent_events, ["start"])
 
+    def test_speak_failsafe_sends_stop_when_tts_leaves_device_speaking(self):
+        class FakeQueue:
+            def qsize(self):
+                return 0
+
+        class FakeTTS:
+            def __init__(self):
+                self.tts_text_queue = FakeQueue()
+                self.tts_audio_queue = FakeQueue()
+
+        class FakeHandler:
+            device_id = "device-1"
+            websocket = object()
+            sentence_id = "sentence-1"
+            client_is_speaking = True
+
+            def __init__(self):
+                self.tts = FakeTTS()
+                self.sent_events = []
+
+        handler = FakeHandler()
+        server = self.make_server(object())
+
+        asyncio.run(server._speak_failsafe(handler, "sentence-1", 0.01))
+
+        self.assertFalse(handler.client_is_speaking)
+        self.assertEqual(handler.sent_events, ["stop"])
+
+    def test_speak_stop_clears_speaking_state(self):
+        class FakeRequest:
+            async def json(self):
+                return {"device_id": "device-1"}
+
+        class FakeHandler:
+            device_id = "device-1"
+            websocket = object()
+            client_is_speaking = True
+            client_abort = False
+
+            def __init__(self):
+                self.sent_events = []
+
+        handler = FakeHandler()
+
+        class FakeWebSocketServer:
+            async def get_admin_connection(self, device_id):
+                return handler
+
+        server = self.make_server(FakeWebSocketServer())
+        response = asyncio.run(server.handle_speak_stop(FakeRequest()))
+
+        payload = json.loads(response.text)
+        self.assertTrue(payload["ok"])
+        self.assertFalse(handler.client_is_speaking)
+        self.assertTrue(handler.client_abort)
+        self.assertEqual(handler.sent_events, ["stop"])
+
     def test_speak_queues_full_text_as_one_tts_item_even_when_tts_one_sentence_exists(self):
         class FakeRequest:
             async def json(self):
