@@ -1,0 +1,20 @@
+{
+    "target": "esp32s3",
+    "builds": [
+        {
+            "name": "bread-compact-wifi-s3cam",
+            "sdkconfig_append": [
+                "CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI_CAM=y",
+                "CONFIG_LCD_ST7789_240X240=y",
+                "CONFIG_OTA_URL=\"https://xiaoli-server.fly.dev/xiaozhi/ota/\"",
+                "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v2/16m_xiaoli_s3cam.csv\"",
+                "CONFIG_FLASH_CUSTOM_ASSETS=y",
+                "CONFIG_CUSTOM_ASSETS_FILE=\"boards/bread-compact-wifi-s3cam/assets.bin\"",
+                "CONFIG_USE_MULTILINE_CHAT_MESSAGE=y",
+                "CONFIG_XIAOZHI_ENABLE_POSTURE_MONITOR=y",
+                "CONFIG_XIAOZHI_POSTURE_CHECK_START_HOUR=17",
+                "CONFIG_XIAOZHI_POSTURE_CHECK_INTERVAL_MINUTES=15"
+            ]
+        }
+    ]
+}

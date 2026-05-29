@@ -16,5 +16,9 @@ backups/
 # Local Superpowers work state
 server/.superpowers/
 
-# The firmware tree is an independent Git repo for now.
-xiaozhi-esp32/
+# Firmware build artifacts & dependencies (rebuilt via idf.py build)
+xiaozhi-esp32/build/
+xiaozhi-esp32/managed_components/
+xiaozhi-esp32/releases/
+xiaozhi-esp32/sdkconfig.old
+xiaozhi-esp32/main/boards/bread-compact-wifi-s3cam/assets.bin
