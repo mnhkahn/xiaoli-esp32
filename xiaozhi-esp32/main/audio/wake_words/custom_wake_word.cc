@@ -11,12 +11,6 @@
 
 #define TAG "CustomWakeWord"
 
-namespace {
-constexpr float kMinWakeWordThreshold = 0.50f;
-constexpr const char* kXiaoLiWakeCommand = "ni hao xiao li";
-constexpr const char* kXiaoLiWakeText = "你好小李";
-}
-
 CustomWakeWord::CustomWakeWord()
     : wake_word_pcm_(), wake_word_opus_() {
 }
@@ -77,12 +71,8 @@ void CustomWakeWord::ParseWakenetModelConfig() {
                     cJSON* text = cJSON_GetObjectItem(command, "text");
                     cJSON* action = cJSON_GetObjectItem(command, "action");
                     if (cJSON_IsString(command_name) && cJSON_IsString(text) && cJSON_IsString(action)) {
-                        std::string display_text = text->valuestring;
-                        if (display_text == "小李" && std::string(command_name->valuestring) == kXiaoLiWakeCommand) {
-                            display_text = kXiaoLiWakeText;
-                        }
-                        commands_.push_back({command_name->valuestring, display_text, action->valuestring});
-                        ESP_LOGI(TAG, "Command: %s, Text: %s, Action: %s", command_name->valuestring, display_text.c_str(), action->valuestring);
+                        commands_.push_back({command_name->valuestring, text->valuestring, action->valuestring});
+                        ESP_LOGI(TAG, "Command: %s, Text: %s, Action: %s", command_name->valuestring, text->valuestring, action->valuestring);
                     }
                 }
             }
@@ -123,11 +113,6 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         ESP_LOGE(TAG, "Failed to initialize multinet, mn_name is nullptr");
         ESP_LOGI(TAG, "Please refer to https://pcn7cs20v8cr.feishu.cn/wiki/CpQjwQsCJiQSWSkYEvrcxcbVnwh to add custom wake word");
         return false;
-    }
-
-    if (threshold_ < kMinWakeWordThreshold) {
-        ESP_LOGW(TAG, "Wake word threshold %.2f is too low, raising to %.2f", threshold_, kMinWakeWordThreshold);
-        threshold_ = kMinWakeWordThreshold;
     }
 
     multinet_ = esp_mn_handle_from_name(mn_name_);

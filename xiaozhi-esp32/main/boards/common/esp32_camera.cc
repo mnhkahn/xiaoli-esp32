@@ -9,6 +9,7 @@
 #include <cJSON.h>
 #include <esp_log.h>
 #include <esp_http_server.h>
+#include <cmath>
 #include <img_converters.h>
 #include <memory>
 #include <new>
@@ -18,6 +19,7 @@
 #include "esp32_camera.h"
 #include "application.h"
 #include "board.h"
+#include "assets/lang_config.h"
 #include "display.h"
 #include "lvgl_display.h"
 #include "mcp_server.h"
@@ -900,6 +902,14 @@ esp_err_t Esp32Camera::LanStreamHttpHandler(httpd_req_t* req) {
     return static_cast<Esp32Camera*>(req->user_ctx)->HandleLanStream(req);
 }
 
+esp_err_t Esp32Camera::LanAudioTestCodecHttpHandler(httpd_req_t* req) {
+    return static_cast<Esp32Camera*>(req->user_ctx)->HandleAudioTestCodec(req);
+}
+
+esp_err_t Esp32Camera::LanAudioTestServiceHttpHandler(httpd_req_t* req) {
+    return static_cast<Esp32Camera*>(req->user_ctx)->HandleAudioTestService(req);
+}
+
 bool Esp32Camera::StartLanHttpServerLocked() {
     if (lan_httpd_ != nullptr) {
         return true;
@@ -945,6 +955,20 @@ bool Esp32Camera::StartLanHttpServerLocked() {
     stream_uri.handler = LanStreamHttpHandler;
     stream_uri.user_ctx = this;
     httpd_register_uri_handler(lan_httpd_, &stream_uri);
+
+    httpd_uri_t test_codec_uri = {};
+    test_codec_uri.uri = "/test_codec";
+    test_codec_uri.method = HTTP_GET;
+    test_codec_uri.handler = LanAudioTestCodecHttpHandler;
+    test_codec_uri.user_ctx = this;
+    httpd_register_uri_handler(lan_httpd_, &test_codec_uri);
+
+    httpd_uri_t test_service_uri = {};
+    test_service_uri.uri = "/test_service";
+    test_service_uri.method = HTTP_GET;
+    test_service_uri.handler = LanAudioTestServiceHttpHandler;
+    test_service_uri.user_ctx = this;
+    httpd_register_uri_handler(lan_httpd_, &test_service_uri);
 
     ESP_LOGI(TAG, "LAN camera HTTP server started on port %d", XIAOLI_LAN_STREAM_PORT);
     return true;
@@ -1021,7 +1045,9 @@ esp_err_t Esp32Camera::HandleLanIndex(httpd_req_t* req) {
         "<body><header><select id=\"res\"><option value=\"qqvga\">QQVGA</option><option value=\"qvga\">QVGA</option>"
         "<option value=\"vga\" selected>VGA</option><option value=\"svga\">SVGA</option></select>"
         "<label>JPEG <input id=\"quality\" type=\"number\" min=\"4\" max=\"40\" value=\"12\"></label>"
-        "<button onclick=\"apply()\">Apply</button><button onclick=\"capture()\">Capture</button></header>"
+        "<button onclick=\"apply()\">Apply</button><button onclick=\"capture()\">Capture</button>"
+        "<button onclick=\"fetch('/test_codec').then(r=>r.json()).then(d=>alert(d.ok?'Codec OK':'FAIL'))\" style=\"background:#0a6\">Test Codec</button>"
+        "<button onclick=\"fetch('/test_service').then(r=>r.json()).then(d=>alert(d.ok?'Service OK':'FAIL'))\" style=\"background:#60a\">Test AudioService</button></header>"
         "<main><img id=\"stream\"></main><script>"
         "const img=document.getElementById('stream');"
         "function url(){const r=document.getElementById('res').value,q=document.getElementById('quality').value;"
@@ -1124,6 +1150,60 @@ esp_err_t Esp32Camera::HandleLanStream(httpd_req_t* req) {
     }
 
     return result;
+}
+
+esp_err_t Esp32Camera::HandleAudioTestCodec(httpd_req_t* req) {
+    ESP_LOGI(TAG, "Test Codec: starting...");
+    auto codec = Board::GetInstance().GetAudioCodec();
+    if (!codec) {
+        ESP_LOGE(TAG, "Test Codec: codec is null");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"codec is null\"}", HTTPD_RESP_USE_STRLEN);
+    }
+
+    ESP_LOGI(TAG, "Test Codec: sample_rate=%d enabled_in=%d enabled_out=%d",
+        codec->output_sample_rate(), codec->input_enabled(), codec->output_enabled());
+
+    codec->Start();
+    codec->EnableOutput(true);
+
+    ESP_LOGI(TAG, "Test Codec: after enable out=%d", codec->output_enabled());
+
+    int sample_rate = codec->output_sample_rate();
+    if (sample_rate <= 0) {
+        ESP_LOGW(TAG, "Test Codec: sample_rate=%d, defaulting to 8000", sample_rate);
+        sample_rate = 8000;
+    }
+    int duration_ms = 500;
+    int frequency = 1000;
+    int amplitude = 20000;
+    int total_samples = sample_rate * duration_ms / 1000;
+
+    ESP_LOGI(TAG, "Test Codec: generating %d samples at %d Hz", total_samples, sample_rate);
+
+    std::vector<int16_t> pcm(total_samples);
+    for (int i = 0; i < total_samples; ++i) {
+        double phase = 2.0 * M_PI * frequency * i / sample_rate;
+        pcm[i] = static_cast<int16_t>(std::sin(phase) * amplitude);
+    }
+
+    ESP_LOGI(TAG, "Test Codec: calling OutputData...");
+    codec->OutputData(pcm);
+    ESP_LOGI(TAG, "Test Codec: done");
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, "{\"ok\":true,\"test\":\"codec\"}", HTTPD_RESP_USE_STRLEN);
+}
+
+esp_err_t Esp32Camera::HandleAudioTestService(httpd_req_t* req) {
+    ESP_LOGI(TAG, "Test Service: playing OGG_SUCCESS...");
+    Application::GetInstance().GetAudioService().PlaySound(Lang::Sounds::OGG_SUCCESS);
+    ESP_LOGI(TAG, "Test Service: done");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, "{\"ok\":true,\"test\":\"service\"}", HTTPD_RESP_USE_STRLEN);
 }
 
 void Esp32Camera::StreamLoop(std::string stream_id, int fps, int duration_sec, framesize_t frame_size, std::string resolution) {

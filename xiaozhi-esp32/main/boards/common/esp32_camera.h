@@ -72,10 +72,14 @@ private:
     esp_err_t HandleLanStatus(httpd_req_t* req);
     esp_err_t HandleLanCapture(httpd_req_t* req);
     esp_err_t HandleLanStream(httpd_req_t* req);
+    esp_err_t HandleAudioTestCodec(httpd_req_t* req);
+    esp_err_t HandleAudioTestService(httpd_req_t* req);
     static esp_err_t LanIndexHttpHandler(httpd_req_t* req);
     static esp_err_t LanStatusHttpHandler(httpd_req_t* req);
     static esp_err_t LanCaptureHttpHandler(httpd_req_t* req);
     static esp_err_t LanStreamHttpHandler(httpd_req_t* req);
+    static esp_err_t LanAudioTestCodecHttpHandler(httpd_req_t* req);
+    static esp_err_t LanAudioTestServiceHttpHandler(httpd_req_t* req);
 
 public:
     Esp32Camera(const camera_config_t &config);

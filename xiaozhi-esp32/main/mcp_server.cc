@@ -52,43 +52,6 @@ std::string_view GetBuiltinSound(const std::string& name) {
     if (name == "9" || name == "digit_9") return Lang::Sounds::OGG_9;
     return {};
 }
-
-void ResetAudioOutput(AudioCodec* codec) {
-    if (codec == nullptr) {
-        throw std::runtime_error("Audio codec is not available");
-    }
-    codec->EnableOutput(true);
-    vTaskDelay(pdMS_TO_TICKS(30));
-    codec->EnableOutput(false);
-    vTaskDelay(pdMS_TO_TICKS(80));
-    codec->EnableOutput(true);
-    vTaskDelay(pdMS_TO_TICKS(30));
-}
-
-void PlayPcmTone(AudioCodec* codec, int frequency, int duration_ms, int amplitude) {
-    if (codec == nullptr) {
-        throw std::runtime_error("Audio codec is not available");
-    }
-    int sample_rate = codec->output_sample_rate();
-    if (sample_rate <= 0) {
-        throw std::runtime_error("Invalid audio output sample rate");
-    }
-    ResetAudioOutput(codec);
-    constexpr double kPi = 3.14159265358979323846;
-    int total_samples = sample_rate * duration_ms / 1000;
-    int chunk_samples = std::max(1, sample_rate / 50);
-    std::vector<int16_t> pcm;
-    pcm.reserve(chunk_samples);
-    for (int offset = 0; offset < total_samples; offset += chunk_samples) {
-        int samples = std::min(chunk_samples, total_samples - offset);
-        pcm.resize(samples);
-        for (int i = 0; i < samples; ++i) {
-            double phase = 2.0 * kPi * frequency * (offset + i) / sample_rate;
-            pcm[i] = static_cast<int16_t>(std::sin(phase) * amplitude);
-        }
-        codec->OutputData(pcm);
-    }
-}
 }  // namespace
 
 McpServer::McpServer() {
@@ -149,31 +112,6 @@ void McpServer::AddCommonTools() {
             return true;
         });
 
-    AddUserOnlyTool("self.audio_speaker.reset_output",
-        "Reset the speaker output channel. Use this if the speaker suddenly becomes silent while MCP calls still return success.",
-        PropertyList(),
-        [&board](const PropertyList& properties) -> ReturnValue {
-            auto codec = board.GetAudioCodec();
-            ResetAudioOutput(codec);
-            return true;
-        });
-
-    AddUserOnlyTool("self.audio_speaker.play_tone",
-        "Play a direct PCM sine wave through the speaker, bypassing Ogg decoding and TTS. Use it to diagnose the local audio output path.",
-        PropertyList({
-            Property("frequency", kPropertyTypeInteger, 20, 8000),
-            Property("duration_ms", kPropertyTypeInteger, 50, 10000),
-            Property("amplitude", kPropertyTypeInteger, 0, 30000)
-        }),
-        [&board](const PropertyList& properties) -> ReturnValue {
-            int frequency = properties["frequency"].value<int>();
-            int duration_ms = properties["duration_ms"].value<int>();
-            int amplitude = properties["amplitude"].value<int>();
-            auto codec = board.GetAudioCodec();
-            PlayPcmTone(codec, frequency, duration_ms, amplitude);
-            return true;
-        });
-    
     auto backlight = board.GetBacklight();
     if (backlight) {
         AddTool("self.screen.set_brightness",

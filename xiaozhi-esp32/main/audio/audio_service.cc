@@ -647,7 +647,7 @@ void AudioService::PlaySound(const std::string_view& ogg) {
         packet->frame_duration = 60;
         packet->payload.resize(size);
         std::memcpy(packet->payload.data(), data, size);
-        PushPacketToDecodeQueue(std::move(packet), false);
+        PushPacketToDecodeQueue(std::move(packet), true);
     });
     demuxer->Reset();
     demuxer->Process(buf, size);

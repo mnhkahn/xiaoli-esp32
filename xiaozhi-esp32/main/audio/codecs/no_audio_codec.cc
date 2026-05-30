@@ -145,17 +145,10 @@ NoAudioCodecSimplex::NoAudioCodecSimplex(int input_sample_rate, int output_sampl
     ESP_LOGI(TAG, "Simplex channels created");
 }
 
-NoAudioCodecSimplex::NoAudioCodecSimplex(int input_sample_rate, int output_sample_rate, gpio_num_t spk_bclk, gpio_num_t spk_ws, gpio_num_t spk_dout, i2s_std_slot_mask_t spk_slot_mask, gpio_num_t mic_sck, gpio_num_t mic_ws, gpio_num_t mic_din, i2s_std_slot_mask_t mic_slot_mask)
-    : NoAudioCodecSimplex(input_sample_rate, output_sample_rate, spk_bclk, spk_ws, spk_dout,
-        I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_MONO, spk_slot_mask, mic_sck, mic_ws, mic_din, mic_slot_mask) {
-}
-
-NoAudioCodecSimplex::NoAudioCodecSimplex(int input_sample_rate, int output_sample_rate, gpio_num_t spk_bclk, gpio_num_t spk_ws, gpio_num_t spk_dout, i2s_data_bit_width_t spk_bit_width, i2s_slot_mode_t spk_slot_mode, i2s_std_slot_mask_t spk_slot_mask, gpio_num_t mic_sck, gpio_num_t mic_ws, gpio_num_t mic_din, i2s_std_slot_mask_t mic_slot_mask){
+NoAudioCodecSimplex::NoAudioCodecSimplex(int input_sample_rate, int output_sample_rate, gpio_num_t spk_bclk, gpio_num_t spk_ws, gpio_num_t spk_dout, i2s_std_slot_mask_t spk_slot_mask, gpio_num_t mic_sck, gpio_num_t mic_ws, gpio_num_t mic_din, i2s_std_slot_mask_t mic_slot_mask){
     duplex_ = false;
     input_sample_rate_ = input_sample_rate;
     output_sample_rate_ = output_sample_rate;
-    output_bit_width_ = spk_bit_width;
-    output_stereo_ = spk_slot_mode == I2S_SLOT_MODE_STEREO;
 
     // Create a new channel for speaker
     i2s_chan_config_t chan_cfg = {
@@ -180,11 +173,11 @@ NoAudioCodecSimplex::NoAudioCodecSimplex(int input_sample_rate, int output_sampl
 
         },
         .slot_cfg = {
-            .data_bit_width = spk_bit_width,
+            .data_bit_width = I2S_DATA_BIT_WIDTH_32BIT,
             .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
-            .slot_mode = spk_slot_mode,
+            .slot_mode = I2S_SLOT_MODE_MONO,
             .slot_mask = spk_slot_mask,
-            .ws_width = spk_bit_width,
+            .ws_width = I2S_DATA_BIT_WIDTH_32BIT,
             .ws_pol = false,
             .bit_shift = true,
             #ifdef   I2S_HW_VERSION_2
@@ -224,30 +217,11 @@ NoAudioCodecSimplex::NoAudioCodecSimplex(int input_sample_rate, int output_sampl
 
 int NoAudioCodec::Write(const int16_t* data, int samples) {
     std::lock_guard<std::mutex> lock(data_if_mutex_);
-    int32_t volume_factor = pow(double(output_volume_) / 100.0, 2) * 65536;
-
-    if (output_bit_width_ == I2S_DATA_BIT_WIDTH_16BIT && output_stereo_) {
-        std::vector<int16_t> buffer(samples * 2);
-        for (int i = 0; i < samples; i++) {
-            int64_t temp = int64_t(data[i]) * volume_factor / 65536;
-            int16_t sample = temp > INT16_MAX ? INT16_MAX : temp < INT16_MIN ? INT16_MIN : static_cast<int16_t>(temp);
-            buffer[i * 2] = sample;
-            buffer[i * 2 + 1] = sample;
-        }
-
-        size_t bytes_written;
-        esp_err_t ret = i2s_channel_write(tx_handle_, buffer.data(), buffer.size() * sizeof(int16_t), &bytes_written, pdMS_TO_TICKS(1000));
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "I2S write failed: %s", esp_err_to_name(ret));
-            return 0;
-        }
-        return bytes_written / (sizeof(int16_t) * 2);
-    }
-
     std::vector<int32_t> buffer(samples);
 
     // output_volume_: 0-100
     // volume_factor_: 0-65536
+    int32_t volume_factor = pow(double(output_volume_) / 100.0, 2) * 65536;
     for (int i = 0; i < samples; i++) {
         int64_t temp = int64_t(data[i]) * volume_factor; // 使用 int64_t 进行乘法运算
         if (temp > INT32_MAX) {
@@ -260,11 +234,7 @@ int NoAudioCodec::Write(const int16_t* data, int samples) {
     }
 
     size_t bytes_written;
-    esp_err_t ret = i2s_channel_write(tx_handle_, buffer.data(), samples * sizeof(int32_t), &bytes_written, pdMS_TO_TICKS(1000));
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "I2S write failed: %s", esp_err_to_name(ret));
-        return 0;
-    }
+    ESP_ERROR_CHECK(i2s_channel_write(tx_handle_, buffer.data(), samples * sizeof(int32_t), &bytes_written, portMAX_DELAY));
     return bytes_written / sizeof(int32_t);
 }
 

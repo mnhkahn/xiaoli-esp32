@@ -1,7 +1,12 @@
 #!/bin/bash
 # ============================================================
-# Xiaoli ESP32-S3 烧录脚本
+# Xiaoli ESP32-S3 编译烧录脚本
 # 项目: xiaozhi v2.2.6 (ESP-IDF)
+#
+# 用法:
+#   ./flash.sh              只烧录（需先编译过）
+#   ./flash.sh --build      全量编译 + 烧录
+#   ./flash.sh --port /dev/cu.xxx  指定串口
 # ============================================================
 set -e
 
@@ -9,6 +14,36 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/xiaozhi-esp32/build"
 ESPTOOL="$SCRIPT_DIR/.espressif/python_env/idf5.5_py3.13_env/bin/esptool.py"
 BAUD="${BAUD:-460800}"
+DO_BUILD=false
+PORT=""
+
+# ---------- 参数解析 ----------
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -b|--build) DO_BUILD=true; shift ;;
+        -p|--port)  PORT="$2"; shift 2 ;;
+        *)          echo "Usage: $0 [--build] [--port /dev/cu.xxx]"; exit 1 ;;
+    esac
+done
+
+# ---------- 编译 ----------
+if [ "$DO_BUILD" = true ]; then
+    echo "========================================"
+    echo "  Full clean + Build"
+    echo "========================================"
+    export IDF_PYTHON_ENV_PATH="$SCRIPT_DIR/.espressif/python_env/idf5.5_py3.13_env"
+    export IDF_TOOLS_PATH="$SCRIPT_DIR/.espressif"
+    source "$SCRIPT_DIR/esp-idf/export.sh" > /dev/null 2>&1
+
+    cd "$SCRIPT_DIR/xiaozhi-esp32"
+    echo "Cleaning..."
+    idf.py fullclean
+    echo "Building..."
+    idf.py build
+    cd "$SCRIPT_DIR"
+    echo "Build complete."
+    echo ""
+fi
 
 # ---------- 检查 esptool ----------
 if [ ! -f "$ESPTOOL" ]; then
@@ -18,11 +53,9 @@ if [ ! -f "$ESPTOOL" ]; then
 fi
 
 # ---------- 串口选择 ----------
-# 优先用环境变量 PORT，否则自动检测并让用户选择
 if [ -n "$PORT" ]; then
     SELECTED_PORT="$PORT"
 else
-    # 收集候选串口（排除 Bluetooth）
     mapfile -t PORTS < <(ls /dev/cu.usb* /dev/cu.usbserial* /dev/cu.SLAB* /dev/cu.wch* 2>/dev/null | grep -vi bluetooth || true)
 
     if [ ${#PORTS[@]} -eq 0 ]; then
@@ -64,7 +97,7 @@ check_bin() {
     local path="$BUILD_DIR/$2"
     if [ ! -f "$path" ]; then
         echo "Missing: $name ($path)"
-        echo "   Run: cd xiaozhi-esp32 && idf.py build"
+        echo "   Run: ./flash.sh --build"
         exit 1
     fi
 }

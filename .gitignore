@@ -9,6 +9,7 @@ __pycache__/
 .espressif/
 .venv/
 esp-idf/
+.deepseek/
 
 # Local firmware backups
 backups/

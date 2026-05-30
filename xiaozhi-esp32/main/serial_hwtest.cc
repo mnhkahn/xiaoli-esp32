@@ -299,48 +299,6 @@ void HandleSetVolume(const std::string& id, cJSON* root) {
         "\"cmd\":\"set_volume\",\"audio_speaker\":{\"volume\":" + std::to_string(codec->output_volume()) + "}");
 }
 
-void HandleTone(const std::string& id, cJSON* root) {
-    auto codec = Board::GetInstance().GetAudioCodec();
-    if (codec == nullptr) {
-        PrintError(id, "audio codec is not available");
-        return;
-    }
-
-    int frequency = std::clamp(IntField(root, "frequency", 1000), 20, 8000);
-    int duration_ms = std::clamp(IntField(root, "duration_ms", 1000), 50, 10000);
-    int amplitude = std::clamp(IntField(root, "amplitude", 12000), 0, 30000);
-    int sample_rate = codec->output_sample_rate();
-    if (sample_rate <= 0) {
-        PrintError(id, "invalid output sample rate");
-        return;
-    }
-
-    if (!codec->output_enabled()) {
-        codec->EnableOutput(true);
-    }
-
-    constexpr double kPi = 3.14159265358979323846;
-    int total_samples = sample_rate * duration_ms / 1000;
-    int chunk_samples = std::max(1, sample_rate / 50);
-    std::vector<int16_t> pcm;
-    pcm.reserve(chunk_samples);
-    for (int offset = 0; offset < total_samples; offset += chunk_samples) {
-        int samples = std::min(chunk_samples, total_samples - offset);
-        pcm.resize(samples);
-        for (int i = 0; i < samples; ++i) {
-            double phase = 2.0 * kPi * frequency * (offset + i) / sample_rate;
-            pcm[i] = static_cast<int16_t>(std::sin(phase) * amplitude);
-        }
-        codec->OutputData(pcm);
-    }
-
-    PrintOk(id,
-        "\"cmd\":\"tone\",\"frequency\":" + std::to_string(frequency) +
-        ",\"duration_ms\":" + std::to_string(duration_ms) +
-        ",\"amplitude\":" + std::to_string(amplitude) +
-        ",\"sample_rate\":" + std::to_string(sample_rate));
-}
-
 void HandlePlayOggBegin(const std::string& id, cJSON* root) {
     int length = IntField(root, "length", 0);
     if (length <= 0 || static_cast<size_t>(length) > kAudioMaxBytes) {
@@ -407,8 +365,6 @@ void HandleCommand(cJSON* root) {
         HandleSnapshot(id, root);
     } else if (cmd == "play_sound") {
         HandlePlaySound(id, root);
-    } else if (cmd == "tone") {
-        HandleTone(id, root);
     } else if (cmd == "play_ogg_begin") {
         HandlePlayOggBegin(id, root);
     } else if (cmd == "play_ogg_chunk") {

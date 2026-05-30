@@ -10,8 +10,6 @@
 class NoAudioCodec : public AudioCodec {
 protected:
     std::mutex data_if_mutex_;
-    bool output_stereo_ = false;
-    i2s_data_bit_width_t output_bit_width_ = I2S_DATA_BIT_WIDTH_32BIT;
 
     virtual int Write(const int16_t* data, int samples) override;
     virtual int Read(int16_t* dest, int samples) override;
@@ -31,7 +29,6 @@ class NoAudioCodecSimplex : public NoAudioCodec {
 public:
     NoAudioCodecSimplex(int input_sample_rate, int output_sample_rate, gpio_num_t spk_bclk, gpio_num_t spk_ws, gpio_num_t spk_dout, gpio_num_t mic_sck, gpio_num_t mic_ws, gpio_num_t mic_din);
     NoAudioCodecSimplex(int input_sample_rate, int output_sample_rate, gpio_num_t spk_bclk, gpio_num_t spk_ws, gpio_num_t spk_dout, i2s_std_slot_mask_t spk_slot_mask, gpio_num_t mic_sck, gpio_num_t mic_ws, gpio_num_t mic_din, i2s_std_slot_mask_t mic_slot_mask);
-    NoAudioCodecSimplex(int input_sample_rate, int output_sample_rate, gpio_num_t spk_bclk, gpio_num_t spk_ws, gpio_num_t spk_dout, i2s_data_bit_width_t spk_bit_width, i2s_slot_mode_t spk_slot_mode, i2s_std_slot_mask_t spk_slot_mask, gpio_num_t mic_sck, gpio_num_t mic_ws, gpio_num_t mic_din, i2s_std_slot_mask_t mic_slot_mask);
 };
 
 class NoAudioCodecSimplexPdm : public NoAudioCodec {
