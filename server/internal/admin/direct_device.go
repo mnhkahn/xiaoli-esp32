@@ -111,6 +111,7 @@ func (h *DeviceHub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			if !errors.Is(err, io.EOF) {
 				// The device reconnects on network errors; no response is possible here.
 			}
+			_ = writeWebSocketFrame(peer.conn, wsOpcodeClose, nil)
 			return
 		}
 		session.touch()
@@ -122,6 +123,7 @@ func (h *DeviceHub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		case wsOpcodePing:
 			_ = session.writeFrame(wsOpcodePong, payload)
 		case wsOpcodeClose:
+			_ = session.writeFrame(wsOpcodeClose, nil)
 			return
 		}
 	}
@@ -675,6 +677,8 @@ func (s *deviceSession) close() {
 	conn := s.conn
 	s.mu.Unlock()
 	if conn != nil {
+		_ = conn.SetWriteDeadline(time.Now().Add(time.Second))
+		_ = writeWebSocketFrame(conn, wsOpcodeClose, nil)
 		_ = conn.Close()
 	}
 }
