@@ -1152,84 +1152,47 @@ esp_err_t Esp32Camera::HandleLanStream(httpd_req_t* req) {
     return result;
 }
 
-struct AudioTestTaskArgs {
-    int sample_rate;
-    int duration_ms;
-    int frequency;
-    int amplitude;
-};
-
-static void AudioTestCodecTask(void* arg) {
-    auto args = static_cast<AudioTestTaskArgs*>(arg);
-    int sample_rate = args->sample_rate;
-    int duration_ms = args->duration_ms;
-    int frequency = args->frequency;
-    int amplitude = args->amplitude;
-    delete args;
-
-    ESP_LOGI(TAG, "Test Codec task: starting...");
-    auto codec = Board::GetInstance().GetAudioCodec();
-    if (codec) {
-        codec->Start();
-        codec->EnableOutput(true);
-
-        int total_samples = sample_rate * duration_ms / 1000;
-        ESP_LOGI(TAG, "Test Codec task: %d samples at %d Hz", total_samples, sample_rate);
-
-        {
-            std::vector<int16_t> pcm(total_samples);
-            for (int i = 0; i < total_samples; ++i) {
-                double phase = 2.0 * M_PI * frequency * i / sample_rate;
-                pcm[i] = static_cast<int16_t>(std::sin(phase) * amplitude);
-            }
-            ESP_LOGI(TAG, "Test Codec task: OutputData...");
-            codec->OutputData(pcm);
-            ESP_LOGI(TAG, "Test Codec task: done");
-        }
-    } else {
-        ESP_LOGE(TAG, "Test Codec task: codec is null");
-    }
-    vTaskDelete(NULL);
-}
-
 esp_err_t Esp32Camera::HandleAudioTestCodec(httpd_req_t* req) {
-    ESP_LOGI(TAG, "Test Codec: spawning task...");
+    ESP_LOGI(TAG, "Test Codec: starting sync...");
     auto codec = Board::GetInstance().GetAudioCodec();
-    int sample_rate = codec->output_sample_rate();
-    if (sample_rate <= 0) sample_rate = 8000;
+    if (!codec) {
+        ESP_LOGE(TAG, "Test Codec: codec is null");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"codec null\"}", HTTPD_RESP_USE_STRLEN);
+    }
 
-    auto args = new (std::nothrow) AudioTestTaskArgs{sample_rate, 1000, 1000, 20000};
-    if (!args) {
-        ESP_LOGE(TAG, "Test Codec: failed to allocate args");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"oom\"}", HTTPD_RESP_USE_STRLEN);
+    int sr = codec->output_sample_rate();
+    ESP_LOGI(TAG, "Test Codec: sr=%d vol=%d", sr, codec->output_volume());
+
+    codec->Start();
+    ESP_LOGI(TAG, "Test Codec: started vol=%d", codec->output_volume());
+
+    codec->EnableOutput(true);
+    ESP_LOGI(TAG, "Test Codec: output enabled=%d", codec->output_enabled());
+
+    if (sr <= 0) sr = 8000;
+    int total = sr * 1; // 1 second
+    ESP_LOGI(TAG, "Test Codec: generating %d samples", total);
+
+    std::vector<int16_t> pcm(total);
+    for (int i = 0; i < total; ++i) {
+        pcm[i] = static_cast<int16_t>(std::sin(2.0 * M_PI * 1000 * i / sr) * 20000);
     }
-    auto ret = xTaskCreate(AudioTestCodecTask, "audio_test", 4096, args, 2, NULL);
-    if (ret != pdPASS) {
-        ESP_LOGE(TAG, "Test Codec: xTaskCreate failed: %d", ret);
-        delete args;
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"task_failed\"}", HTTPD_RESP_USE_STRLEN);
-    }
+
+    ESP_LOGI(TAG, "Test Codec: calling OutputData...");
+    codec->OutputData(pcm);
+    ESP_LOGI(TAG, "Test Codec: done");
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     return httpd_resp_send(req, "{\"ok\":true,\"test\":\"codec\"}", HTTPD_RESP_USE_STRLEN);
 }
 
-static void AudioTestServiceTask(void* arg) {
-    ESP_LOGI(TAG, "Test Service task: playing...");
-    Application::GetInstance().GetAudioService().PlaySound(Lang::Sounds::OGG_SUCCESS);
-    ESP_LOGI(TAG, "Test Service task: done");
-    vTaskDelete(NULL);
-}
-
 esp_err_t Esp32Camera::HandleAudioTestService(httpd_req_t* req) {
-    ESP_LOGI(TAG, "Test Service: spawning task...");
-    xTaskCreate(AudioTestServiceTask, "audio_test_svc", 8192, nullptr, 2, NULL);
-
+    ESP_LOGI(TAG, "Test Service: playing...");
+    Application::GetInstance().GetAudioService().PlaySound(Lang::Sounds::OGG_SUCCESS);
+    ESP_LOGI(TAG, "Test Service: done");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     return httpd_resp_send(req, "{\"ok\":true,\"test\":\"service\"}", HTTPD_RESP_USE_STRLEN);
