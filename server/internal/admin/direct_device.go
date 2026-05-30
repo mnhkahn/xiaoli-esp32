@@ -59,6 +59,7 @@ type deviceSession struct {
 	listenMode   string
 	audioFrames  [][]byte
 	voiceRunning bool
+	lastFrameAt  time.Time
 }
 
 type mcpCallResult struct {
@@ -117,6 +118,7 @@ func (h *DeviceHub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		session.touch()
 		switch opcode {
 		case wsOpcodeText:
+			log.Printf("ws text from %s: %s", session.deviceID, string(payload))
 			h.handleText(session, payload)
 		case wsOpcodeBinary:
 			h.handleAudio(session, payload)
@@ -397,6 +399,7 @@ func (h *DeviceHub) handleVisionFrameNotification(session *deviceSession, raw js
 func (h *DeviceHub) handleListenMessage(session *deviceSession, message map[string]json.RawMessage) {
 	var state string
 	_ = json.Unmarshal(message["state"], &state)
+	log.Printf("listen %s from %s", state, session.deviceID)
 	switch state {
 	case "start":
 		var mode string
@@ -404,6 +407,7 @@ func (h *DeviceHub) handleListenMessage(session *deviceSession, message map[stri
 		session.startVoiceRecording(mode)
 	case "stop":
 		frames := session.stopVoiceRecording()
+		log.Printf("listen stop from %s: %d frames", session.deviceID, len(frames))
 		if len(frames) > 0 {
 			go h.processVoiceTurn(session, frames)
 		}
@@ -689,6 +693,10 @@ func (s *deviceSession) startVoiceRecording(mode string) {
 	s.listening = true
 	s.listenMode = mode
 	s.audioFrames = nil
+	s.lastFrameAt = time.Now()
+	if mode == "auto" {
+		go s.autoStopWatcher()
+	}
 }
 
 func (s *deviceSession) appendVoiceFrame(payload []byte) {
@@ -703,8 +711,45 @@ func (s *deviceSession) appendVoiceFrame(payload []byte) {
 	if len(s.audioFrames) >= 400 {
 		return
 	}
+	s.lastFrameAt = time.Now()
 	frame := append([]byte(nil), payload...)
 	s.audioFrames = append(s.audioFrames, frame)
+}
+
+func (s *deviceSession) autoStopWatcher() {
+	const minFrames = 5
+	const silenceTimeout = 1500 * time.Millisecond
+	const maxDuration = 30 * time.Second
+	started := time.Now()
+	for {
+		s.voiceMu.Lock()
+		listening := s.listening && s.listenMode == "auto"
+		frameCount := len(s.audioFrames)
+		lastFrame := s.lastFrameAt
+		s.voiceMu.Unlock()
+		if !listening {
+			return
+		}
+		if frameCount >= minFrames && time.Since(lastFrame) > silenceTimeout {
+			frames := s.stopVoiceRecording()
+			log.Printf("auto-stop from %s: %d frames (silence %.1fs)", s.deviceID, len(frames), time.Since(lastFrame).Seconds())
+			if len(frames) > 0 {
+				go s.hub.processVoiceTurn(s, frames)
+			}
+			_ = s.writeJSON(map[string]any{"type": "tts", "state": "stop"})
+			return
+		}
+		if time.Since(started) > maxDuration {
+			frames := s.stopVoiceRecording()
+			log.Printf("auto-stop from %s: %d frames (max duration)", s.deviceID, len(frames))
+			if len(frames) > 0 {
+				go s.hub.processVoiceTurn(s, frames)
+			}
+			_ = s.writeJSON(map[string]any{"type": "tts", "state": "stop"})
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 func (s *deviceSession) stopVoiceRecording() [][]byte {
