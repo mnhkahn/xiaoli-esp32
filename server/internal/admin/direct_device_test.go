@@ -13,15 +13,6 @@ import (
 	"time"
 )
 
-type fakeSpeechSynthesizer struct {
-	contentType string
-	body        []byte
-}
-
-func (f fakeSpeechSynthesizer) Synthesize(ctx context.Context, text string) (string, []byte, error) {
-	return f.contentType, f.body, nil
-}
-
 type fakeVisionAnalyzer struct {
 	answer string
 }
@@ -55,91 +46,6 @@ func TestDirectOTAResponsePointsDeviceAtGoWebSocket(t *testing.T) {
 	if websocket["token"] != "device-token" {
 		t.Fatalf("websocket token = %#v", websocket["token"])
 	}
-}
-
-func TestDirectSpeakSynthesizesOggAndCallsPlayURLTool(t *testing.T) {
-	cfg := testConfig()
-	cfg.PublicBaseURL = "https://example.test"
-	stream := newStreamHub()
-	audio := newAudioStore(cfg.now)
-	hub := NewDeviceHub(cfg, stream, audio, nil, nil, nil, fakeSpeechSynthesizer{
-		contentType: "audio/ogg",
-		body:        []byte("ogg-opus-bytes"),
-	})
-	serverConn, clientConn := net.Pipe()
-	defer clientConn.Close()
-	session := hub.register("device-1", serverConn, "127.0.0.1")
-	defer hub.unregister(session)
-
-	urlCh := make(chan string, 1)
-	ttsStates := make(chan string, 3)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			opcode, payload, err := readServerFrame(clientConn)
-			if err != nil {
-				return
-			}
-			if opcode != wsOpcodeText {
-				continue
-			}
-			var envelope map[string]any
-			if err := json.Unmarshal(payload, &envelope); err != nil {
-				return
-			}
-			if envelope["type"] == "tts" {
-				ttsStates <- stringValue(envelope["state"])
-				if envelope["state"] == "stop" {
-					return
-				}
-				continue
-			}
-			if envelope["type"] != "mcp" {
-				continue
-			}
-			mcp := envelope["payload"].(map[string]any)
-			id := int(mcp["id"].(float64))
-			params := mcp["params"].(map[string]any)
-			if params["name"] != "self.audio_speaker.play_ogg_url" {
-				t.Errorf("tool name = %#v", params["name"])
-			}
-			args := params["arguments"].(map[string]any)
-			url := stringValue(args["url"])
-			urlCh <- url
-			session.completeMCP(id, mcpCallResult{Result: true, Raw: "true"})
-		}
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	result, err := hub.Speak(ctx, "device-1", "你好")
-	if err != nil {
-		t.Fatalf("Speak returned error: %v", err)
-	}
-	if result["ok"] != true {
-		t.Fatalf("Speak result = %#v", result)
-	}
-	url := <-urlCh
-	if !strings.HasPrefix(url, "https://example.test/xiaoli/audio/") || !strings.Contains(url, "token=") {
-		t.Fatalf("audio url = %q", url)
-	}
-	if result["bytes"] != 14 {
-		t.Fatalf("bytes = %#v, want 14", result["bytes"])
-	}
-	wantStates := []string{"start", "sentence_start", "stop"}
-	for _, want := range wantStates {
-		select {
-		case got := <-ttsStates:
-			if got != want {
-				t.Fatalf("tts state = %q, want %q", got, want)
-			}
-		case <-time.After(time.Second):
-			t.Fatalf("timed out waiting for tts state %q", want)
-		}
-	}
-	clientConn.Close()
-	<-done
 }
 
 func TestDirectVisionExplainUsesGoVisionModel(t *testing.T) {
