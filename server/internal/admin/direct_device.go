@@ -747,8 +747,8 @@ func (s *deviceSession) appendVoiceFrame(payload []byte) (recv, voice, total int
 		n, err := s.opusDecoder.Decode(payload, s.pcmBuf)
 		if err == nil && n > 0 {
 			rms := pcmRMS(s.pcmBuf[:n])
-			// Hysteresis: enter voice at 600, stay above 300.
-			const enter, stay = 600.0, 300.0
+			// Hysteresis: enter voice at 2000, stay above 800.
+			const enter, stay = 2000.0, 800.0
 			isVoice := rms >= enter || (s.hasVoice && rms >= stay)
 			if isVoice {
 				s.lastVoiceAt = time.Now()
@@ -785,7 +785,7 @@ func pcmRMS(samples []int16) float64 {
 }
 
 func (s *deviceSession) autoStopWatcher() {
-	const silenceTimeout = 1500 * time.Millisecond
+	const silenceTimeout = 500 * time.Millisecond
 	const maxDuration = 30 * time.Second
 	started := time.Now()
 	for {
