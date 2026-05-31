@@ -54,12 +54,13 @@ type deviceSession struct {
 	nextID   int
 	pending  map[int]chan mcpCallResult
 
-	voiceMu      sync.Mutex
-	listening    bool
-	listenMode   string
-	audioFrames  [][]byte
-	voiceRunning bool
-	lastFrameAt  time.Time
+	voiceMu       sync.Mutex
+	listening     bool
+	listenMode    string
+	audioFrames   [][]byte
+	voiceRunning  bool
+	lastVoiceAt   time.Time
+	hasVoice      bool
 }
 
 type mcpCallResult struct {
@@ -693,7 +694,8 @@ func (s *deviceSession) startVoiceRecording(mode string) {
 	s.listening = true
 	s.listenMode = mode
 	s.audioFrames = nil
-	s.lastFrameAt = time.Now()
+	s.lastVoiceAt = time.Time{}
+	s.hasVoice = false
 	if mode == "auto" {
 		go s.autoStopWatcher()
 	}
@@ -711,32 +713,35 @@ func (s *deviceSession) appendVoiceFrame(payload []byte) {
 	if len(s.audioFrames) >= 400 {
 		return
 	}
-	s.lastFrameAt = time.Now()
+	// Simple VAD: opus silence frames at 16kHz/60ms are ~10-25 bytes;
+	// speech frames are typically 80+ bytes. Threshold at 40 bytes.
+	if len(payload) >= 40 {
+		s.lastVoiceAt = time.Now()
+		s.hasVoice = true
+	}
 	frame := append([]byte(nil), payload...)
 	s.audioFrames = append(s.audioFrames, frame)
 }
 
 func (s *deviceSession) autoStopWatcher() {
-	const minFrames = 5
 	const silenceTimeout = 1500 * time.Millisecond
 	const maxDuration = 30 * time.Second
 	started := time.Now()
 	for {
 		s.voiceMu.Lock()
 		listening := s.listening && s.listenMode == "auto"
-		frameCount := len(s.audioFrames)
-		lastFrame := s.lastFrameAt
+		hasVoice := s.hasVoice
+		lastVoice := s.lastVoiceAt
 		s.voiceMu.Unlock()
 		if !listening {
 			return
 		}
-		if frameCount >= minFrames && time.Since(lastFrame) > silenceTimeout {
+		if hasVoice && time.Since(lastVoice) > silenceTimeout {
 			frames := s.stopVoiceRecording()
-			log.Printf("auto-stop from %s: %d frames (silence %.1fs)", s.deviceID, len(frames), time.Since(lastFrame).Seconds())
+			log.Printf("auto-stop from %s: %d frames (silence %.1fs)", s.deviceID, len(frames), time.Since(lastVoice).Seconds())
 			if len(frames) > 0 {
 				go s.hub.processVoiceTurn(s, frames)
 			}
-			_ = s.writeJSON(map[string]any{"type": "tts", "state": "stop"})
 			return
 		}
 		if time.Since(started) > maxDuration {
@@ -745,7 +750,6 @@ func (s *deviceSession) autoStopWatcher() {
 			if len(frames) > 0 {
 				go s.hub.processVoiceTurn(s, frames)
 			}
-			_ = s.writeJSON(map[string]any{"type": "tts", "state": "stop"})
 			return
 		}
 		time.Sleep(200 * time.Millisecond)
