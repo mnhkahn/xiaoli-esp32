@@ -61,6 +61,8 @@ type deviceSession struct {
 	voiceRunning  bool
 	lastVoiceAt   time.Time
 	hasVoice      bool
+	audioRecvCnt  int
+	audioVoiceCnt int
 }
 
 type mcpCallResult struct {
@@ -422,7 +424,10 @@ func (h *DeviceHub) handleListenMessage(session *deviceSession, message map[stri
 }
 
 func (h *DeviceHub) handleAudio(session *deviceSession, payload []byte) {
-	session.appendVoiceFrame(payload)
+	recv, voice, total := session.appendVoiceFrame(payload)
+	if recv > 0 && recv%50 == 0 {
+		log.Printf("audio recv from %s: recv=%d voice=%d buffered=%d lastSize=%d", session.deviceID, recv, voice, total, len(payload))
+	}
 }
 
 func (h *DeviceHub) processVoiceTurn(session *deviceSession, frames [][]byte) {
@@ -443,15 +448,18 @@ func (h *DeviceHub) processVoiceTurn(session *deviceSession, frames [][]byte) {
 		_ = h.playAssistantText(ctx, session, "这次没有听清楚。")
 		return
 	}
+	log.Printf("voice turn ogg built for %s: bytes=%d frames=%d", session.deviceID, len(ogg), len(frames))
 	text, err := h.asr.Transcribe(ctx, ogg)
 	if err != nil || strings.TrimSpace(text) == "" {
-		log.Printf("voice turn ASR failed for %s: %v", session.deviceID, err)
+		log.Printf("voice turn ASR failed for %s: err=%v text=%q", session.deviceID, err, text)
 		_ = h.playAssistantText(ctx, session, "这次没有听清楚。")
 		return
 	}
+	log.Printf("voice turn ASR ok for %s: text=%q", session.deviceID, text)
 	_ = session.writeJSON(map[string]any{"type": "stt", "text": text})
 
 	answer := h.answerUserText(ctx, session, text)
+	log.Printf("voice turn LLM answer for %s: %q", session.deviceID, answer)
 	if strings.TrimSpace(answer) == "" {
 		answer = "我现在还没想好怎么回答。"
 	}
@@ -507,10 +515,13 @@ func (h *DeviceHub) playAssistantText(ctx context.Context, session *deviceSessio
 	}
 	contentType, body, err := h.tts.Synthesize(ctx, text)
 	if err != nil {
+		log.Printf("tts synth failed for %s: text=%q err=%v", session.deviceID, text, err)
 		return err
 	}
+	log.Printf("tts synth ok for %s: text=%q contentType=%s bytes=%d", session.deviceID, text, contentType, len(body))
 	record := h.audio.put(contentType, body)
 	audioURL := strings.TrimRight(h.cfg.PublicBaseURL, "/") + "/xiaoli/audio/" + record.ID + "?token=" + record.Token
+	log.Printf("tts play url for %s: %s", session.deviceID, audioURL)
 	result, err := h.Call(ctx, BridgeCallRequest{
 		DeviceID:  session.deviceID,
 		Tool:      "self.audio_speaker.play_ogg_url",
@@ -518,9 +529,11 @@ func (h *DeviceHub) playAssistantText(ctx context.Context, session *deviceSessio
 		Timeout:   45,
 	})
 	if err != nil {
+		log.Printf("tts play_ogg_url call failed for %s: %v", session.deviceID, err)
 		return err
 	}
 	if result.Error != "" {
+		log.Printf("tts play_ogg_url returned error for %s: %s", session.deviceID, result.Error)
 		return errors.New(result.Error)
 	}
 	delay := oggOpusDuration(body)
@@ -696,31 +709,36 @@ func (s *deviceSession) startVoiceRecording(mode string) {
 	s.audioFrames = nil
 	s.lastVoiceAt = time.Time{}
 	s.hasVoice = false
+	s.audioRecvCnt = 0
+	s.audioVoiceCnt = 0
 	if mode == "auto" {
 		go s.autoStopWatcher()
 	}
 }
 
-func (s *deviceSession) appendVoiceFrame(payload []byte) {
+func (s *deviceSession) appendVoiceFrame(payload []byte) (recv, voice, total int) {
 	if len(payload) == 0 {
-		return
+		return 0, 0, 0
 	}
 	s.voiceMu.Lock()
 	defer s.voiceMu.Unlock()
 	if !s.listening {
-		return
+		return 0, 0, 0
 	}
 	if len(s.audioFrames) >= 400 {
-		return
+		return s.audioRecvCnt, s.audioVoiceCnt, len(s.audioFrames)
 	}
+	s.audioRecvCnt++
 	// Simple VAD: opus silence frames at 16kHz/60ms are ~10-25 bytes;
 	// speech frames are typically 80+ bytes. Threshold at 40 bytes.
 	if len(payload) >= 40 {
 		s.lastVoiceAt = time.Now()
 		s.hasVoice = true
+		s.audioVoiceCnt++
 	}
 	frame := append([]byte(nil), payload...)
 	s.audioFrames = append(s.audioFrames, frame)
+	return s.audioRecvCnt, s.audioVoiceCnt, len(s.audioFrames)
 }
 
 func (s *deviceSession) autoStopWatcher() {
@@ -923,3 +941,4 @@ func base64DecodedSize(value string) int {
 	}
 	return len(value) * 3 / 4
 }
+
