@@ -54,16 +54,17 @@ type deviceSession struct {
 	nextID   int
 	pending  map[int]chan mcpCallResult
 
-	voiceMu       sync.Mutex
-	listening     bool
-	listenMode    string
-	audioFrames   [][]byte
-	voiceRunning  bool
-	lastVoiceAt   time.Time
-	hasVoice      bool
-	audioRecvCnt  int
-	audioVoiceCnt int
-	vad           *SileroVAD
+	voiceMu           sync.Mutex
+	listening         bool
+	listenMode        string
+	audioFrames       [][]byte
+	voiceRunning      bool
+	lastVoiceAt       time.Time
+	lastVoiceActivity time.Time
+	hasVoice          bool
+	audioRecvCnt      int
+	audioVoiceCnt     int
+	vad               *SileroVAD
 }
 
 type mcpCallResult struct {
@@ -279,14 +280,15 @@ func (h *DeviceHub) StopSpeak(ctx context.Context, deviceID string) (map[string]
 func (h *DeviceHub) register(deviceID string, conn net.Conn, clientIP string) *deviceSession {
 	now := time.Now()
 	session := &deviceSession{
-		hub:          h,
-		deviceID:     deviceID,
-		sessionID:    randomToken(18),
-		clientIP:     clientIP,
-		connectedAt:  now,
-		lastActivity: now,
-		conn:         conn,
-		pending:      map[int]chan mcpCallResult{},
+		hub:               h,
+		deviceID:          deviceID,
+		sessionID:         randomToken(18),
+		clientIP:          clientIP,
+		connectedAt:       now,
+		lastActivity:      now,
+		conn:              conn,
+		pending:           map[int]chan mcpCallResult{},
+		lastVoiceActivity: now,
 	}
 	h.mu.Lock()
 	if old := h.sessions[deviceID]; old != nil {
@@ -295,6 +297,7 @@ func (h *DeviceHub) register(deviceID string, conn net.Conn, clientIP string) *d
 	h.sessions[deviceID] = session
 	h.mu.Unlock()
 	log.Printf("device connected: %s from %s", deviceID, clientIP)
+	go session.idleTimeoutWatcher()
 	return session
 }
 
@@ -419,6 +422,9 @@ func (h *DeviceHub) handleListenMessage(session *deviceSession, message map[stri
 		var text string
 		_ = json.Unmarshal(message["text"], &text)
 		if strings.TrimSpace(text) != "" {
+			session.voiceMu.Lock()
+			session.lastVoiceActivity = time.Now()
+			session.voiceMu.Unlock()
 			_ = session.writeJSON(map[string]any{"type": "stt", "text": text})
 		}
 	}
@@ -714,6 +720,7 @@ func (s *deviceSession) startVoiceRecording(mode string) {
 	s.listenMode = mode
 	s.audioFrames = nil
 	s.lastVoiceAt = time.Time{}
+	s.lastVoiceActivity = time.Now()
 	s.hasVoice = false
 	s.audioRecvCnt = 0
 	s.audioVoiceCnt = 0
@@ -752,6 +759,7 @@ func (s *deviceSession) appendVoiceFrame(payload []byte) (recv, voice, total int
 		isVoice, ran, prob := s.vad.Detect(payload)
 		if isVoice {
 			s.lastVoiceAt = time.Now()
+			s.lastVoiceActivity = s.lastVoiceAt
 			s.hasVoice = true
 			s.audioVoiceCnt++
 		}
@@ -761,12 +769,36 @@ func (s *deviceSession) appendVoiceFrame(payload []byte) (recv, voice, total int
 	} else {
 		// Fallback: if VAD missing, accept all frames so we don't block.
 		s.lastVoiceAt = time.Now()
+		s.lastVoiceActivity = s.lastVoiceAt
 		s.hasVoice = true
 		s.audioVoiceCnt++
 	}
 	frame := append([]byte(nil), payload...)
 	s.audioFrames = append(s.audioFrames, frame)
 	return s.audioRecvCnt, s.audioVoiceCnt, len(s.audioFrames)
+}
+
+func (s *deviceSession) idleTimeoutWatcher() {
+	const idleTimeout = 180 * time.Second
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.mu.Lock()
+		closed := s.closed
+		s.mu.Unlock()
+		if closed {
+			return
+		}
+		s.voiceMu.Lock()
+		lastVoice := s.lastVoiceActivity
+		s.voiceMu.Unlock()
+		idle := time.Since(lastVoice)
+		if idle > idleTimeout {
+			log.Printf("idle timeout for %s: %.0fs without voice, closing connection", s.deviceID, idle.Seconds())
+			s.close()
+			return
+		}
+	}
 }
 
 func (s *deviceSession) autoStopWatcher() {
