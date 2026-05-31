@@ -187,6 +187,9 @@ func (v *SileroVAD) Detect(opusPayload []byte) (isVoice bool, ran bool, lastProb
 	}
 	n, err := v.decoder.Decode(opusPayload, v.pcmBuf)
 	if err != nil || n <= 0 {
+		if err != nil {
+			log.Printf("silero vad: opus decode err: %v (payload=%d)", err, len(opusPayload))
+		}
 		// On decode failure return the current window state without modification.
 		return v.windowVote(), false, lastProb
 	}
@@ -211,6 +214,7 @@ func (v *SileroVAD) Detect(opusPayload []byte) (isVoice bool, ran bool, lastProb
 		v.pending = v.pending[sileroChunkSamples:]
 
 		if err := v.session.Run(); err != nil {
+			log.Printf("silero vad: session.Run err: %v", err)
 			return v.windowVote(), false, lastProb
 		}
 		prob := probData[0]

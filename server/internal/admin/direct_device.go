@@ -426,7 +426,7 @@ func (h *DeviceHub) handleListenMessage(session *deviceSession, message map[stri
 
 func (h *DeviceHub) handleAudio(session *deviceSession, payload []byte) {
 	recv, voice, total := session.appendVoiceFrame(payload)
-	if recv > 0 && recv%50 == 0 {
+	if recv > 0 && recv%100 == 0 {
 		log.Printf("audio recv from %s: recv=%d voice=%d buffered=%d lastSize=%d", session.deviceID, recv, voice, total, len(payload))
 	}
 }
@@ -725,6 +725,11 @@ func (s *deviceSession) startVoiceRecording(mode string) {
 			s.vad = v
 		}
 	}
+	if s.vad != nil {
+		log.Printf("listen start %s mode=%s vad=silero", s.deviceID, mode)
+	} else {
+		log.Printf("listen start %s mode=%s vad=FALLBACK (silero unavailable)", s.deviceID, mode)
+	}
 	if mode == "auto" {
 		go s.autoStopWatcher()
 	}
@@ -750,8 +755,8 @@ func (s *deviceSession) appendVoiceFrame(payload []byte) (recv, voice, total int
 			s.hasVoice = true
 			s.audioVoiceCnt++
 		}
-		if ran && s.audioRecvCnt%50 == 0 {
-			log.Printf("vad sample %s: prob=%.2f isVoice=%v", s.deviceID, prob, isVoice)
+		if ran && s.audioRecvCnt%25 == 0 {
+			log.Printf("vad sample %s: prob=%.2f isVoice=%v voiceCnt=%d/%d", s.deviceID, prob, isVoice, s.audioVoiceCnt, s.audioRecvCnt)
 		}
 	} else {
 		// Fallback: if VAD missing, accept all frames so we don't block.
