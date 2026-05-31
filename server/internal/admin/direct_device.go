@@ -207,62 +207,13 @@ func (h *DeviceHub) Speak(ctx context.Context, deviceID string, text string) (ma
 	if h.tts == nil {
 		return nil, fmt.Errorf("Go TTS is not configured")
 	}
-	contentType, body, err := h.tts.Synthesize(ctx, text)
-	if err != nil {
+	if err := h.playAssistantText(ctx, session, text); err != nil {
 		return nil, err
 	}
-	if len(body) > 1024*1024 {
-		return nil, fmt.Errorf("TTS audio is too large: %d bytes", len(body))
-	}
-	record := h.audio.put(contentType, body)
-	audioURL := strings.TrimRight(h.cfg.PublicBaseURL, "/") + "/xiaoli/audio/" + record.ID + "?token=" + record.Token
-	if err := session.writeJSON(map[string]any{"type": "tts", "state": "start"}); err != nil {
-		return nil, err
-	}
-	defer func() {
-		_ = session.writeJSON(map[string]any{"type": "tts", "state": "stop"})
-	}()
-	if err := session.writeJSON(map[string]any{"type": "tts", "state": "sentence_start", "text": text}); err != nil {
-		return nil, err
-	}
-	result, err := h.Call(ctx, BridgeCallRequest{
-		DeviceID:  deviceID,
-		Tool:      "self.audio_speaker.play_ogg_url",
-		Arguments: map[string]any{"url": audioURL},
-		Timeout:   45,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	// Wait for audio playback to complete before sending "tts stop",
-	// otherwise the device transitions out of Speaking state and
-	// ResetDecoder() truncates the audio mid-playback.
-	delay := oggOpusDuration(body)
-	if delay < 1200*time.Millisecond {
-		delay = 1200 * time.Millisecond
-	}
-	if delay > 30*time.Second {
-		delay = 30 * time.Second
-	}
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-timer.C:
-	}
-
 	return map[string]any{
-		"ok":           result.OK,
-		"status":       "played",
-		"device_id":    deviceID,
-		"audio_id":     record.ID,
-		"bytes":        len(body),
-		"content_type": record.ContentType,
-		"mcp":          result.Result,
-		"error":        result.Error,
-		"elapsed_ms":   result.ElapsedMS,
+		"ok":        true,
+		"status":    "played",
+		"device_id": deviceID,
 	}, nil
 }
 
