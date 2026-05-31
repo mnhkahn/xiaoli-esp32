@@ -9,14 +9,11 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
-
-	opus "gopkg.in/hraban/opus.v2"
 )
 
 type DeviceController interface {
@@ -66,8 +63,7 @@ type deviceSession struct {
 	hasVoice      bool
 	audioRecvCnt  int
 	audioVoiceCnt int
-	opusDecoder   *opus.Decoder
-	pcmBuf        []int16
+	vad           *SileroVAD
 }
 
 type mcpCallResult struct {
@@ -704,6 +700,12 @@ func (s *deviceSession) close() {
 		_ = writeWebSocketFrame(conn, wsOpcodeClose, nil)
 		_ = conn.Close()
 	}
+	s.voiceMu.Lock()
+	if s.vad != nil {
+		s.vad.Close()
+		s.vad = nil
+	}
+	s.voiceMu.Unlock()
 }
 
 func (s *deviceSession) startVoiceRecording(mode string) {
@@ -716,13 +718,12 @@ func (s *deviceSession) startVoiceRecording(mode string) {
 	s.hasVoice = false
 	s.audioRecvCnt = 0
 	s.audioVoiceCnt = 0
-	if s.opusDecoder == nil {
-		dec, err := opus.NewDecoder(16000, 1)
+	if s.vad == nil {
+		v, err := NewSileroVAD()
 		if err != nil {
-			log.Printf("opus decoder init failed for %s: %v", s.deviceID, err)
+			log.Printf("silero vad init failed for %s: %v", s.deviceID, err)
 		} else {
-			s.opusDecoder = dec
-			s.pcmBuf = make([]int16, 16000*60/1000) // up to 960 samples per 60ms frame
+			s.vad = v
 		}
 	}
 	if mode == "auto" {
@@ -743,26 +744,18 @@ func (s *deviceSession) appendVoiceFrame(payload []byte) (recv, voice, total int
 		return s.audioRecvCnt, s.audioVoiceCnt, len(s.audioFrames)
 	}
 	s.audioRecvCnt++
-	if s.opusDecoder != nil && s.pcmBuf != nil {
-		n, err := s.opusDecoder.Decode(payload, s.pcmBuf)
-		if err == nil && n > 0 {
-			rms := pcmRMS(s.pcmBuf[:n])
-			// Hysteresis: enter voice at 2000, stay above 800.
-			const enter, stay = 2000.0, 800.0
-			isVoice := rms >= enter || (s.hasVoice && rms >= stay)
-			if isVoice {
-				s.lastVoiceAt = time.Now()
-				s.hasVoice = true
-				s.audioVoiceCnt++
-			}
-			if s.audioRecvCnt%50 == 0 {
-				log.Printf("vad sample %s: rms=%.0f isVoice=%v", s.deviceID, rms, isVoice)
-			}
-		} else if err != nil && s.audioRecvCnt%100 == 0 {
-			log.Printf("opus decode err %s: %v size=%d", s.deviceID, err, len(payload))
+	if s.vad != nil {
+		isVoice, ran, prob := s.vad.Detect(payload)
+		if isVoice {
+			s.lastVoiceAt = time.Now()
+			s.hasVoice = true
+			s.audioVoiceCnt++
+		}
+		if ran && s.audioRecvCnt%50 == 0 {
+			log.Printf("vad sample %s: prob=%.2f isVoice=%v", s.deviceID, prob, isVoice)
 		}
 	} else {
-		// Fallback: if decoder missing, accept all frames so we don't block.
+		// Fallback: if VAD missing, accept all frames so we don't block.
 		s.lastVoiceAt = time.Now()
 		s.hasVoice = true
 		s.audioVoiceCnt++
@@ -770,18 +763,6 @@ func (s *deviceSession) appendVoiceFrame(payload []byte) (recv, voice, total int
 	frame := append([]byte(nil), payload...)
 	s.audioFrames = append(s.audioFrames, frame)
 	return s.audioRecvCnt, s.audioVoiceCnt, len(s.audioFrames)
-}
-
-func pcmRMS(samples []int16) float64 {
-	if len(samples) == 0 {
-		return 0
-	}
-	var sum float64
-	for _, s := range samples {
-		f := float64(s)
-		sum += f * f
-	}
-	return math.Sqrt(sum / float64(len(samples)))
 }
 
 func (s *deviceSession) autoStopWatcher() {
