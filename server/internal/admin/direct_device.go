@@ -506,10 +506,10 @@ func (h *DeviceHub) playAssistantText(ctx context.Context, session *deviceSessio
 		return nil
 	}
 	_ = session.writeJSON(map[string]any{"type": "llm", "emotion": "neutral"})
-	_ = session.writeJSON(map[string]any{"type": "tts", "state": "start"})
-	_ = session.writeJSON(map[string]any{"type": "tts", "state": "sentence_start", "text": text})
+	_ = session.writeJSON(map[string]any{"type": "tts", "state": "start", "session_id": session.sessionID})
+	_ = session.writeJSON(map[string]any{"type": "tts", "state": "sentence_start", "text": text, "session_id": session.sessionID})
 	defer func() {
-		_ = session.writeJSON(map[string]any{"type": "tts", "state": "stop"})
+		_ = session.writeJSON(map[string]any{"type": "tts", "state": "stop", "session_id": session.sessionID})
 	}()
 	if h.tts == nil {
 		return fmt.Errorf("TTS is not configured")
@@ -520,38 +520,32 @@ func (h *DeviceHub) playAssistantText(ctx context.Context, session *deviceSessio
 		return err
 	}
 	log.Printf("tts synth ok for %s: text=%q contentType=%s bytes=%d", session.deviceID, text, contentType, len(body))
-	record := h.audio.put(contentType, body)
-	audioURL := strings.TrimRight(h.cfg.PublicBaseURL, "/") + "/xiaoli/audio/" + record.ID + "?token=" + record.Token
-	log.Printf("tts play url for %s: %s", session.deviceID, audioURL)
-	result, err := h.Call(ctx, BridgeCallRequest{
-		DeviceID:  session.deviceID,
-		Tool:      "self.audio_speaker.play_ogg_url",
-		Arguments: map[string]any{"url": audioURL},
-		Timeout:   45,
-	})
-	if err != nil {
-		log.Printf("tts play_ogg_url call failed for %s: %v", session.deviceID, err)
-		return err
+
+	packets, frameDuration := extractOpusPackets(body)
+	if len(packets) == 0 {
+		log.Printf("tts no opus packets extracted for %s", session.deviceID)
+		return errors.New("no opus packets")
 	}
-	if result.Error != "" {
-		log.Printf("tts play_ogg_url returned error for %s: %s", session.deviceID, result.Error)
-		return errors.New(result.Error)
+	if frameDuration <= 0 || frameDuration > 100*time.Millisecond {
+		frameDuration = 20 * time.Millisecond
 	}
-	delay := oggOpusDuration(body)
-	if delay < 1200*time.Millisecond {
-		delay = 1200 * time.Millisecond
+	log.Printf("tts stream start for %s: packets=%d frameDur=%s", session.deviceID, len(packets), frameDuration)
+
+	ticker := time.NewTicker(frameDuration)
+	defer ticker.Stop()
+	for i, pkt := range packets {
+		if err := session.writeFrame(wsOpcodeBinary, pkt); err != nil {
+			log.Printf("tts stream send failed for %s at packet %d/%d: %v", session.deviceID, i+1, len(packets), err)
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
 	}
-	if delay > 30*time.Second {
-		delay = 30 * time.Second
-	}
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
+	log.Printf("tts stream done for %s: sent %d packets", session.deviceID, len(packets))
+	return nil
 }
 
 func (h *DeviceHub) bootstrapMCP(session *deviceSession) {
@@ -613,15 +607,20 @@ func (s *deviceSession) callMCP(ctx context.Context, method string, params map[s
 		},
 	}
 	if err := s.writeJSON(envelope); err != nil {
+		log.Printf("mcp call write failed for %s id=%d method=%s: %v", s.deviceID, id, method, err)
 		return mcpCallResult{}, err
 	}
+	log.Printf("mcp call sent to %s id=%d method=%s", s.deviceID, id, method)
 	select {
 	case result, ok := <-ch:
 		if !ok {
+			log.Printf("mcp call channel closed for %s id=%d method=%s", s.deviceID, id, method)
 			return mcpCallResult{}, errors.New("device connection closed")
 		}
+		log.Printf("mcp call result for %s id=%d method=%s error=%q", s.deviceID, id, method, result.Error)
 		return result, nil
 	case <-ctx.Done():
+		log.Printf("mcp call timeout for %s id=%d method=%s err=%v", s.deviceID, id, method, ctx.Err())
 		return mcpCallResult{}, ctx.Err()
 	}
 }

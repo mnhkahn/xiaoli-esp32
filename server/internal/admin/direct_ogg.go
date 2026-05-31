@@ -170,3 +170,79 @@ func oggOpusDuration(body []byte) time.Duration {
 	}
 	return time.Duration(float64(time.Second) * float64(lastGranule) / 48000.0)
 }
+
+// extractOpusPackets walks an Ogg/Opus container and returns the raw Opus
+// packets in order, plus the average duration per packet (computed from the
+// final granule position / number of audio packets, all in 48kHz units).
+// Header packets (OpusHead, OpusTags) are skipped. Multi-segment Opus packets
+// (segments < 255 mark the end of a packet) are reassembled.
+func extractOpusPackets(body []byte) (packets [][]byte, frameDuration time.Duration) {
+	reader := bytes.NewReader(body)
+	var partial []byte
+	var lastGranule uint64
+	for reader.Len() >= 27 {
+		header := make([]byte, 27)
+		if _, err := reader.Read(header); err != nil {
+			break
+		}
+		if string(header[0:4]) != "OggS" {
+			break
+		}
+		headerType := header[5]
+		granule := binary.LittleEndian.Uint64(header[6:14])
+		segments := int(header[26])
+		if segments > reader.Len() {
+			break
+		}
+		laces := make([]byte, segments)
+		if _, err := reader.Read(laces); err != nil {
+			break
+		}
+		payloadLen := 0
+		for _, l := range laces {
+			payloadLen += int(l)
+		}
+		if payloadLen > reader.Len() {
+			break
+		}
+		payload := make([]byte, payloadLen)
+		if _, err := reader.Read(payload); err != nil {
+			break
+		}
+		// Walk laces to split / continue packets.
+		offset := 0
+		for _, l := range laces {
+			partial = append(partial, payload[offset:offset+int(l)]...)
+			offset += int(l)
+			if l < 255 {
+				// End of an Opus packet. The first two packets are
+				// OpusHead and OpusTags — skip those.
+				if !isOpusHeaderPacket(partial) {
+					p := make([]byte, len(partial))
+					copy(p, partial)
+					packets = append(packets, p)
+				}
+				partial = partial[:0]
+			}
+		}
+		_ = headerType
+		if granule != ^uint64(0) && granule > lastGranule {
+			lastGranule = granule
+		}
+	}
+	if len(packets) > 0 && lastGranule > 0 {
+		// granule is total samples at 48kHz; divide by packet count.
+		frameDuration = time.Duration(float64(time.Second) * float64(lastGranule) / 48000.0 / float64(len(packets)))
+	}
+	return packets, frameDuration
+}
+
+func isOpusHeaderPacket(p []byte) bool {
+	if len(p) >= 8 && string(p[:8]) == "OpusHead" {
+		return true
+	}
+	if len(p) >= 8 && string(p[:8]) == "OpusTags" {
+		return true
+	}
+	return false
+}

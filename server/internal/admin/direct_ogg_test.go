@@ -24,3 +24,34 @@ func TestBuildOggOpusWrapsRawFrames(t *testing.T) {
 		t.Fatalf("duration = %s, want 120ms", got)
 	}
 }
+
+func TestExtractOpusPacketsRoundTrip(t *testing.T) {
+	frames := [][]byte{
+		make([]byte, 80),
+		make([]byte, 90),
+		make([]byte, 85),
+		make([]byte, 80),
+		make([]byte, 75),
+	}
+	for i, f := range frames {
+		for j := range f {
+			f[j] = byte(i + 1)
+		}
+	}
+	ogg, err := buildOggOpus(frames, 16000, 1, 60)
+	if err != nil {
+		t.Fatalf("buildOggOpus: %v", err)
+	}
+	got, frameDur := extractOpusPackets(ogg)
+	if len(got) != len(frames) {
+		t.Fatalf("packet count: got %d want %d", len(got), len(frames))
+	}
+	for i, f := range frames {
+		if !bytes.Equal(got[i], f) {
+			t.Fatalf("packet %d mismatch: got %x want %x", i, got[i], f)
+		}
+	}
+	if frameDur < 50*time.Millisecond || frameDur > 70*time.Millisecond {
+		t.Errorf("frameDuration: got %v want ~60ms", frameDur)
+	}
+}
