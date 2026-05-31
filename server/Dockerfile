@@ -19,7 +19,7 @@ RUN go build -o /out/xiaoli-admin ./cmd/xiaoli-admin
 
 FROM debian:bookworm-slim AS onnxrt
 
-ARG ONNXRUNTIME_VERSION=1.20.1
+ARG ONNXRUNTIME_VERSION=1.24.0
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl tar \
     && rm -rf /var/lib/apt/lists/*
