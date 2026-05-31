@@ -9,11 +9,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	opus "gopkg.in/hraban/opus.v2"
 )
 
 type DeviceController interface {
@@ -63,6 +66,8 @@ type deviceSession struct {
 	hasVoice      bool
 	audioRecvCnt  int
 	audioVoiceCnt int
+	opusDecoder   *opus.Decoder
+	pcmBuf        []int16
 }
 
 type mcpCallResult struct {
@@ -711,6 +716,15 @@ func (s *deviceSession) startVoiceRecording(mode string) {
 	s.hasVoice = false
 	s.audioRecvCnt = 0
 	s.audioVoiceCnt = 0
+	if s.opusDecoder == nil {
+		dec, err := opus.NewDecoder(16000, 1)
+		if err != nil {
+			log.Printf("opus decoder init failed for %s: %v", s.deviceID, err)
+		} else {
+			s.opusDecoder = dec
+			s.pcmBuf = make([]int16, 16000*60/1000) // up to 960 samples per 60ms frame
+		}
+	}
 	if mode == "auto" {
 		go s.autoStopWatcher()
 	}
@@ -729,9 +743,26 @@ func (s *deviceSession) appendVoiceFrame(payload []byte) (recv, voice, total int
 		return s.audioRecvCnt, s.audioVoiceCnt, len(s.audioFrames)
 	}
 	s.audioRecvCnt++
-	// Simple VAD: opus silence frames at 16kHz/60ms are ~10-25 bytes;
-	// speech frames are typically 80+ bytes. Threshold at 40 bytes.
-	if len(payload) >= 40 {
+	if s.opusDecoder != nil && s.pcmBuf != nil {
+		n, err := s.opusDecoder.Decode(payload, s.pcmBuf)
+		if err == nil && n > 0 {
+			rms := pcmRMS(s.pcmBuf[:n])
+			// Hysteresis: enter voice at 600, stay above 300.
+			const enter, stay = 600.0, 300.0
+			isVoice := rms >= enter || (s.hasVoice && rms >= stay)
+			if isVoice {
+				s.lastVoiceAt = time.Now()
+				s.hasVoice = true
+				s.audioVoiceCnt++
+			}
+			if s.audioRecvCnt%50 == 0 {
+				log.Printf("vad sample %s: rms=%.0f isVoice=%v", s.deviceID, rms, isVoice)
+			}
+		} else if err != nil && s.audioRecvCnt%100 == 0 {
+			log.Printf("opus decode err %s: %v size=%d", s.deviceID, err, len(payload))
+		}
+	} else {
+		// Fallback: if decoder missing, accept all frames so we don't block.
 		s.lastVoiceAt = time.Now()
 		s.hasVoice = true
 		s.audioVoiceCnt++
@@ -739,6 +770,18 @@ func (s *deviceSession) appendVoiceFrame(payload []byte) (recv, voice, total int
 	frame := append([]byte(nil), payload...)
 	s.audioFrames = append(s.audioFrames, frame)
 	return s.audioRecvCnt, s.audioVoiceCnt, len(s.audioFrames)
+}
+
+func pcmRMS(samples []int16) float64 {
+	if len(samples) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, s := range samples {
+		f := float64(s)
+		sum += f * f
+	}
+	return math.Sqrt(sum / float64(len(samples)))
 }
 
 func (s *deviceSession) autoStopWatcher() {
@@ -764,9 +807,13 @@ func (s *deviceSession) autoStopWatcher() {
 		}
 		if time.Since(started) > maxDuration {
 			frames := s.stopVoiceRecording()
-			log.Printf("auto-stop from %s: %d frames (max duration)", s.deviceID, len(frames))
-			if len(frames) > 0 {
-				go s.hub.processVoiceTurn(s, frames)
+			if hasVoice {
+				log.Printf("auto-stop from %s: %d frames (max duration, has voice)", s.deviceID, len(frames))
+				if len(frames) > 0 {
+					go s.hub.processVoiceTurn(s, frames)
+				}
+			} else {
+				log.Printf("auto-stop from %s: %d frames discarded (max duration, no voice)", s.deviceID, len(frames))
 			}
 			return
 		}
