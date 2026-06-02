@@ -300,6 +300,8 @@ void AudioService::AudioOutputTask() {
         audio_queue_cv_.notify_all();
         lock.unlock();
 
+        ESP_LOGI(TAG, "AudioOutputTask: pcm=%d samples output_enabled=%d pcm[0..3]=%d %d %d %d", (int)task->pcm.size(), codec_->output_enabled(), task->pcm.size() > 0 ? (int)task->pcm[0] : 0, task->pcm.size() > 1 ? (int)task->pcm[1] : 0, task->pcm.size() > 2 ? (int)task->pcm[2] : 0, task->pcm.size() > 3 ? (int)task->pcm[3] : 0);
+
         if (!codec_->output_enabled()) {
             esp_timer_stop(audio_power_timer_);
             esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
@@ -367,6 +369,7 @@ void AudioService::OpusCodecTask() {
                 decoder_lock.unlock();
                 if (ret == ESP_AUDIO_ERR_OK) {
                     task->pcm.resize(out_frame.decoded_size / sizeof(int16_t));
+                    ESP_LOGI(TAG, "Decoded OK: pcm=%d samples rate=%d->%d", (int)(out_frame.decoded_size / sizeof(int16_t)), decoder_sample_rate_, codec_->output_sample_rate());
                     if (decoder_sample_rate_ != codec_->output_sample_rate() && output_resampler_ != nullptr) {
                         uint32_t target_size = 0;
                         esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, task->pcm.size(), &target_size);
@@ -631,6 +634,7 @@ void AudioService::SetCallbacks(AudioServiceCallbacks& callbacks) {
 }
 
 void AudioService::PlaySound(const std::string_view& ogg) {
+    ESP_LOGI(TAG, "PlaySound: size=%d output_enabled=%d", (int)ogg.size(), codec_->output_enabled());
     if (!codec_->output_enabled()) {
         esp_timer_stop(audio_power_timer_);
         esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
@@ -641,16 +645,19 @@ void AudioService::PlaySound(const std::string_view& ogg) {
     size_t size = ogg.size();
 
     auto demuxer = std::make_unique<OggDemuxer>();
-    demuxer->OnDemuxerFinished([this](const uint8_t* data, int sample_rate, size_t size){
+    int frame_count = 0;
+    demuxer->OnDemuxerFinished([this, &frame_count](const uint8_t* data, int sample_rate, size_t size){
+        frame_count++;
         auto packet = std::make_unique<AudioStreamPacket>();
         packet->sample_rate = sample_rate;
         packet->frame_duration = 60;
         packet->payload.resize(size);
         std::memcpy(packet->payload.data(), data, size);
-        PushPacketToDecodeQueue(std::move(packet), true);
+        PushPacketToDecodeQueue(std::move(packet), false);
     });
     demuxer->Reset();
     demuxer->Process(buf, size);
+    ESP_LOGI(TAG, "PlaySound: demuxed %d frames", frame_count);
 }
 
 bool AudioService::IsIdle() {

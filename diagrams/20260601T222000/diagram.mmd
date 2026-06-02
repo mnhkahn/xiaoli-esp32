@@ -1,0 +1,55 @@
+flowchart TB
+    subgraph 链路1["链路1: 服务器推送TTS"]
+        S1[服务器发送]
+        S2["WebSocket/MQTT接收 ❌无日志"]
+        S3["解析二进制帧 ❌无日志"]
+        S4["推入解码队列 ❌无日志"]
+        S5["Opus解码 ✅Decoded OK"]
+        S6["重采样 ✅Resampling"]
+        S7["推入播放队列 ❌无日志"]
+        S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7
+    end
+
+    subgraph 链路2["链路2: 本地播放提示音"]
+        L1["OGG数据"]
+        L2["OggDemuxer解复用 ✅PlaySound"]
+        L3["推入解码队列 ❌无日志"]
+        L4["Opus解码 ✅Decoded OK"]
+        L5["重采样 ✅Resampling"]
+        L6["推入播放队列 ❌无日志"]
+        L1 --> L2 --> L3 --> L4 --> L5 --> L6
+    end
+
+    subgraph 链路3["链路3: HTTP测试播放"]
+        H1["HTTP请求 /test_codec"]
+        H2["生成PCM ❌无日志"]
+        H1 --> H2
+    end
+
+    subgraph 共享层["共享层: AudioCodec"]
+        A1["codec->OutputData()"]
+        A2["I2S总线"]
+        A3["扬声器"]
+        A1 --> A2 --> A3
+    end
+
+    S7 --> A1
+    L6 --> A1
+    H2 --> A1
+
+    style S2 fill:#ffcccc,stroke:#ff0000
+    style S3 fill:#ffcccc,stroke:#ff0000
+    style S4 fill:#ffcccc,stroke:#ff0000
+    style S7 fill:#ffcccc,stroke:#ff0000
+    style L3 fill:#ffcccc,stroke:#ff0000
+    style L6 fill:#ffcccc,stroke:#ff0000
+    style H2 fill:#ffcccc,stroke:#ff0000
+
+    style L2 fill:#ccffcc,stroke:#00aa00
+    style S5 fill:#ccffcc,stroke:#00aa00
+    style S6 fill:#ccffcc,stroke:#00aa00
+    style L4 fill:#ccffcc,stroke:#00aa00
+    style L5 fill:#ccffcc,stroke:#00aa00
+    style A1 fill:#cceeff,stroke:#0066cc
+    style A2 fill:#cceeff,stroke:#0066cc
+    style A3 fill:#cceeff,stroke:#0066cc

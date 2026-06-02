@@ -13,6 +13,7 @@
 
 #include <cstring>
 #include <ctime>
+#include <cmath>
 #include <esp_log.h>
 #include <cJSON.h>
 #include <driver/gpio.h>
