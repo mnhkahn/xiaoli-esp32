@@ -812,7 +812,7 @@ func dashboardHTML(user map[string]any) string {
   <title>小李设备后台</title>
   <style>
     * { box-sizing: border-box; }
-    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #17202a; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #17202a; overflow-x: hidden; }
     header { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid #d9dee7; background: #fff; }
     h1 { margin: 0; font-size: 18px; font-weight: 650; }
     h2 { margin: 0 0 12px; font-size: 15px; }
@@ -852,7 +852,8 @@ func dashboardHTML(user map[string]any) string {
     .pill { border-radius: 999px; padding: 2px 8px; font-size: 12px; background: #eef2f6; color: #667085; }
     .pill.ok { background: #dcfae6; color: #067647; }
     @keyframes spin { to { transform: rotate(360deg); } }
-    @media (max-width: 820px) { .tool-grid, .device-row { grid-template-columns: 1fr; } }
+    @media (max-width: 820px) { .tool-grid, .device-row { grid-template-columns: 1fr; } .video-controls select { min-width: auto; width: 100%; } }
+    @media (max-width: 640px) { main { padding: 12px; } section { padding: 10px; } .stream-viewer { min-height: 240px; } pre { min-height: 200px; } .tab-button { font-size: 13px; padding: 6px 8px; } }
   </style>
 </head>
 <body>
