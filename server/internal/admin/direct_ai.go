@@ -418,6 +418,8 @@ func (a *EinoAgent) SetHub(hub *DeviceHub) {
 
 // Chat sends userText through the Eino agent with memory and optional MCP tools.
 func (a *EinoAgent) Chat(ctx context.Context, deviceID string, userText string) (string, error) {
+	log.Printf("EinoAgent.Chat called: device=%s text=%q langsmith=%v", deviceID, userText, a.langsmith != nil)
+
 	// Load conversation history
 	history := a.memory.Load(ctx, deviceID)
 
