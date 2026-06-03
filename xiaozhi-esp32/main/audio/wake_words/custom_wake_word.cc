@@ -11,6 +11,10 @@
 
 #define TAG "CustomWakeWord"
 
+namespace {
+constexpr float kMinWakeWordThreshold = 0.50f;
+}
+
 CustomWakeWord::CustomWakeWord()
     : wake_word_pcm_(), wake_word_opus_() {
 }
@@ -113,6 +117,11 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         ESP_LOGE(TAG, "Failed to initialize multinet, mn_name is nullptr");
         ESP_LOGI(TAG, "Please refer to https://pcn7cs20v8cr.feishu.cn/wiki/CpQjwQsCJiQSWSkYEvrcxcbVnwh to add custom wake word");
         return false;
+    }
+
+    if (threshold_ < kMinWakeWordThreshold) {
+        ESP_LOGW(TAG, "Wake word threshold %.2f is too low, raising to %.2f", threshold_, kMinWakeWordThreshold);
+        threshold_ = kMinWakeWordThreshold;
     }
 
     multinet_ = esp_mn_handle_from_name(mn_name_);
