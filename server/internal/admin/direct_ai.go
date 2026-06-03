@@ -459,32 +459,40 @@ func (a *EinoAgent) Chat(ctx context.Context, deviceID string, userText string) 
 		return "", fmt.Errorf("create agent: %w", err)
 	}
 
-	// Attach LangSmith tracing if configured
+	// Attach LangSmith tracing if configured — use Runner so callbacks
+	// go through flowAgent.initAgentCallbacks into the context.
+	runner := adk.NewRunner(ctx, adk.RunnerConfig{
+		Agent: agent,
+	})
 	var runOpts []adk.AgentRunOption
 	if a.langsmith != nil {
 		ctx = langsmith.SetTrace(ctx, langsmith.WithSessionName(a.cfg.LangSmithProject))
 		runOpts = append(runOpts, adk.WithCallbacks(a.langsmith))
 	}
 
-	iter := agent.Run(ctx, &adk.AgentInput{
-		Messages: msgs,
-	}, runOpts...)
+	iter := runner.Run(ctx, msgs, runOpts...)
 
 	var result *schema.Message
+	eventCount := 0
 	for {
 		event, ok := iter.Next()
 		if !ok {
 			break
 		}
+		eventCount++
 		if event.Err != nil {
+			log.Printf("EinoAgent.Chat event error: %v", event.Err)
 			return "", fmt.Errorf("agent error: %w", event.Err)
 		}
+		log.Printf("EinoAgent.Chat event[%d]: output=%v", eventCount, event.Output != nil)
 		if event.Output != nil && event.Output.MessageOutput != nil &&
 			event.Output.MessageOutput.Message != nil &&
 			event.Output.MessageOutput.Role == schema.Assistant {
 			result = event.Output.MessageOutput.Message
+			log.Printf("EinoAgent.Chat assistant: %q", result.Content)
 		}
 	}
+	log.Printf("EinoAgent.Chat done: events=%d hasResult=%v", eventCount, result != nil)
 	if result == nil || result.Content == "" {
 		return "", fmt.Errorf("agent returned empty response")
 	}
