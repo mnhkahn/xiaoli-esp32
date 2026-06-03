@@ -29,7 +29,7 @@ type DeviceHub struct {
 	stream *streamHub
 	audio  *audioStore
 	asr    SpeechRecognizer
-	llm    ChatCompleter
+	agent  *EinoAgent
 	vision VisionAnalyzer
 	tts    SpeechSynthesizer
 
@@ -73,13 +73,13 @@ type mcpCallResult struct {
 	Error  string
 }
 
-func NewDeviceHub(cfg Config, stream *streamHub, audio *audioStore, asr SpeechRecognizer, llm ChatCompleter, vision VisionAnalyzer, tts SpeechSynthesizer) *DeviceHub {
+func NewDeviceHub(cfg Config, stream *streamHub, audio *audioStore, asr SpeechRecognizer, agent *EinoAgent, vision VisionAnalyzer, tts SpeechSynthesizer) *DeviceHub {
 	return &DeviceHub{
 		cfg:      cfg,
 		stream:   stream,
 		audio:    audio,
 		asr:      asr,
-		llm:      llm,
+		agent:    agent,
 		vision:   vision,
 		tts:      tts,
 		sessions: map[string]*deviceSession{},
@@ -425,6 +425,7 @@ func (h *DeviceHub) processVoiceTurn(session *deviceSession, frames [][]byte) {
 }
 
 func (h *DeviceHub) answerUserText(ctx context.Context, session *deviceSession, userText string) string {
+	// needsVision 快速路径：视觉关键词直接调用 camera tool，不走 Agent ReAct 循环
 	if needsVision(userText) {
 		result, err := h.Call(ctx, BridgeCallRequest{
 			DeviceID: session.deviceID,
@@ -443,15 +444,12 @@ func (h *DeviceHub) answerUserText(ctx context.Context, session *deviceSession, 
 			return "我现在看不了摄像头，原因是" + err.Error()
 		}
 	}
-	if h.llm == nil {
+	if h.agent == nil {
 		return "我现在还没有配置语言模型。"
 	}
-	answer, err := h.llm.Complete(ctx, []chatMessage{
-		{Role: "system", Content: h.cfg.GoLLMPrompt},
-		{Role: "user", Content: userText},
-	})
+	answer, err := h.agent.Chat(ctx, session.deviceID, userText)
 	if err != nil {
-		log.Printf("voice turn LLM failed for %s: %v", session.deviceID, err)
+		log.Printf("agent chat failed for %s: %v", session.deviceID, err)
 		return "我现在回答不了，语言模型调用失败。"
 	}
 	return answer

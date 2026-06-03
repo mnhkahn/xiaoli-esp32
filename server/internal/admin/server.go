@@ -79,9 +79,13 @@ func NewServer(cfg Config) *AdminServer {
 	stream := newStreamHub()
 	audioStore := newAudioStore(cfg.now)
 	asr := newOpenAITranscriber(cfg)
-	llm := newGoLLMClient(cfg)
+	agent := newEinoAgent(cfg)
 	vision := newGoVisionClient(cfg)
 	tts := newHTTPSpeechSynthesizer(cfg, nil)
+	deviceHub := NewDeviceHub(cfg, stream, audioStore, asr, agent, vision, tts)
+	if agent != nil {
+		agent.SetHub(deviceHub)
+	}
 	s := &AdminServer{
 		cfg:         cfg,
 		signer:      newSigner(cfg.SessionSecret, cfg.now),
@@ -89,7 +93,7 @@ func NewServer(cfg Config) *AdminServer {
 		bridge:      NewBridgeClient(cfg.BridgeBaseURL, client),
 		stream:      stream,
 		audioStore:  audioStore,
-		deviceHub:   NewDeviceHub(cfg, stream, audioStore, asr, llm, vision, tts),
+		deviceHub:   deviceHub,
 		images:      map[string]imageRecord{},
 		imagesByDev: map[string][]string{},
 	}

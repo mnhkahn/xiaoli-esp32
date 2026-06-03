@@ -55,6 +55,12 @@ type Config struct {
 	LarkWebhookURL          string
 	LarkAppID               string
 	LarkAppSecret           string
+	RedisURL                string
+	RedisKeyPrefix          string
+	MemoryTTL               time.Duration
+	LangSmithTracing        bool
+	LangSmithAPIKey         string
+	LangSmithProject        string
 	Now                     func() time.Time
 }
 
@@ -108,6 +114,12 @@ func LoadConfig() Config {
 		LarkWebhookURL:          env("LARK_BOT_WEBHOOK_URL", ""),
 		LarkAppID:               env("LARK_APP_ID", ""),
 		LarkAppSecret:           env("LARK_APP_SECRET", ""),
+		RedisURL:                env("XIAOLI_REDIS_URL", ""),
+		RedisKeyPrefix:          env("XIAOLI_REDIS_KEY_PREFIX", "xiaoli:cp:"),
+		MemoryTTL:               time.Duration(envInt("XIAOLI_MEMORY_TTL_HOURS", 24)) * time.Hour,
+		LangSmithTracing:        envBool("LANGSMITH_TRACING", false),
+		LangSmithAPIKey:         env("LANGSMITH_API_KEY", ""),
+		LangSmithProject:        env("LANGSMITH_PROJECT", "xiaoli-server"),
 	}
 	return cfg
 }
