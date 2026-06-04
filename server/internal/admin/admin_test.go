@@ -466,10 +466,10 @@ func TestMemoryMessageButtonsUseValidInlineContent(t *testing.T) {
 	for _, fragment := range []string{
 		`const button = document.createElement("button");`,
 		`const head = document.createElement("span");`,
-		`const content = document.createElement("span");`,
-		`.message { width: 100%;`,
-		`.content { display: block;`,
-		`overflow-wrap: anywhere;`,
+		`const preview = document.createElement("span");`,
+		`.memory-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);`,
+		`.message-preview { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;`,
+		`preview.textContent = msg.content || msg.reasoning_content || "(no text content)";`,
 	} {
 		if !strings.Contains(html, fragment) {
 			t.Fatalf("memory page missing valid message layout fragment %s", fragment)
@@ -478,6 +478,8 @@ func TestMemoryMessageButtonsUseValidInlineContent(t *testing.T) {
 	for _, fragment := range []string{
 		`const head = document.createElement("div");`,
 		`const content = document.createElement("div");`,
+		`const content = document.createElement("span");`,
+		`.content {`,
 	} {
 		if strings.Contains(html, fragment) {
 			t.Fatalf("message buttons should not contain block div children: %s", fragment)
