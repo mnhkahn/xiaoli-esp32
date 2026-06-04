@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"time"
+
+	"gopkg.in/hraban/opus.v2"
 )
 
 const oggOpusSerial = 0x7869616f
@@ -245,4 +247,70 @@ func isOpusHeaderPacket(p []byte) bool {
 		return true
 	}
 	return false
+}
+
+// reencodeOpusFrames decodes small Opus packets into PCM and re-encodes them
+// at the target frame duration, matching the Python server's approach.
+// This ensures the device decoder receives frames matching its configured
+// frame_duration (e.g. 60ms).
+func reencodeOpusFrames(packets [][]byte, sampleRate int, srcFrameDuration time.Duration, targetFrameDurationMs int) ([][]byte, time.Duration, error) {
+	if sampleRate <= 0 {
+		sampleRate = 16000
+	}
+	if targetFrameDurationMs <= 0 {
+		targetFrameDurationMs = 60
+	}
+	srcFrameMs := int(srcFrameDuration / time.Millisecond)
+	if srcFrameMs <= 0 {
+		srcFrameMs = 20
+	}
+
+	dec, err := opus.NewDecoder(sampleRate, 1)
+	if err != nil {
+		return nil, 0, err
+	}
+	enc, err := opus.NewEncoder(sampleRate, 1, opus.AppVoIP)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	srcFrameSize := sampleRate / 1000 * srcFrameMs
+	targetFrameSize := sampleRate / 1000 * targetFrameDurationMs
+
+	// Decode all packets into a single PCM buffer
+	var pcm []int16
+	for _, pkt := range packets {
+		buf := make([]int16, srcFrameSize)
+		n, err := dec.Decode(pkt, buf)
+		if err != nil {
+			continue
+		}
+		pcm = append(pcm, buf[:n]...)
+	}
+
+	// Re-encode at target frame duration
+	var out [][]byte
+	for i := 0; i < len(pcm); i += targetFrameSize {
+		end := i + targetFrameSize
+		if end > len(pcm) {
+			end = len(pcm)
+		}
+		frame := pcm[i:end]
+		// Pad last frame with silence if needed
+		if len(frame) < targetFrameSize {
+			padded := make([]int16, targetFrameSize)
+			copy(padded, frame)
+			frame = padded
+		}
+		encoded := make([]byte, 1024)
+		n, err := enc.Encode(frame, encoded)
+		if err != nil {
+			continue
+		}
+		pkt := make([]byte, n)
+		copy(pkt, encoded[:n])
+		out = append(out, pkt)
+	}
+
+	return out, time.Duration(targetFrameDurationMs) * time.Millisecond, nil
 }

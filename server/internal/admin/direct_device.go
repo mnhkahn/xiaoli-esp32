@@ -484,13 +484,22 @@ func (h *DeviceHub) playAssistantText(ctx context.Context, session *deviceSessio
 	if frameDuration <= 0 || frameDuration > 100*time.Millisecond {
 		frameDuration = 20 * time.Millisecond
 	}
-	log.Printf("tts stream start for %s: packets=%d frameDur=%s", session.deviceID, len(packets), frameDuration)
 
-	ticker := time.NewTicker(frameDuration)
+	// Re-encode at 60ms to match device decoder's frame_duration
+	reencoded, targetFrameDuration, err := reencodeOpusFrames(packets, 16000, frameDuration, 60)
+	if err != nil || len(reencoded) == 0 {
+		log.Printf("tts reencode failed for %s: %v, falling back to raw packets", session.deviceID, err)
+		reencoded = packets
+		targetFrameDuration = frameDuration
+	}
+
+	log.Printf("tts stream start for %s: packets=%d reencoded=%d srcFrameDur=%s targetFrameDur=%s", session.deviceID, len(packets), len(reencoded), frameDuration, targetFrameDuration)
+
+	ticker := time.NewTicker(targetFrameDuration)
 	defer ticker.Stop()
-	for i, pkt := range packets {
+	for i, pkt := range reencoded {
 		if err := session.writeFrame(wsOpcodeBinary, pkt); err != nil {
-			log.Printf("tts stream send failed for %s at packet %d/%d: %v", session.deviceID, i+1, len(packets), err)
+			log.Printf("tts stream send failed for %s at packet %d/%d: %v", session.deviceID, i+1, len(reencoded), err)
 			return err
 		}
 		select {
@@ -499,7 +508,7 @@ func (h *DeviceHub) playAssistantText(ctx context.Context, session *deviceSessio
 		case <-ticker.C:
 		}
 	}
-	log.Printf("tts stream done for %s: sent %d packets", session.deviceID, len(packets))
+	log.Printf("tts stream done for %s: sent %d packets", session.deviceID, len(reencoded))
 	return nil
 }
 
