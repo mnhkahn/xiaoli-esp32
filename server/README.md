@@ -37,7 +37,6 @@ fly secrets set SILICONFLOW_API_KEY=your_siliconflow_key
 fly secrets set SERVER_AUTH_KEY=$(openssl rand -hex 32)
 fly secrets set ADMIN_SESSION_SECRET=$(openssl rand -hex 32)
 fly secrets set LOGTO_APP_SECRET=your_logto_app_secret
-fly secrets set LANGSMITH_TRACING=true LANGSMITH_API_KEY=your_langsmith_key
 fly secrets set STUDY_MONITOR_ENABLED=true LARK_BOT_WEBHOOK_URL=your_lark_webhook LARK_APP_ID=your_lark_app_id LARK_APP_SECRET=your_lark_app_secret
 ```
 
@@ -120,9 +119,6 @@ Important environment variables:
 - `LARK_BOT_WEBHOOK_URL`: custom bot webhook URL; set as a secret
 - `LARK_APP_ID`: Lark app ID used to upload message images; set as a secret
 - `LARK_APP_SECRET`: Lark app secret used to upload message images; set as a secret
-- `LANGSMITH_TRACING`: set to `true` to trace OpenAI-compatible LLM/VLLM calls
-- `LANGSMITH_API_KEY`: LangSmith tracing API key; set as a secret
-- `LANGSMITH_PROJECT`: LangSmith project name; default `xiaoli-server`
 - `ASR_MODULE`: default `SiliconFlowASR`
 - `LLM_MODULE`: default `SiliconFlowLLM`
 - `VLLM_MODULE`: default `SiliconFlowVLLM`

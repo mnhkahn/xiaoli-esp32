@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +28,27 @@ func testConfig() Config {
 		Now: func() time.Time {
 			return time.Unix(1_700_000_000, 0)
 		},
+	}
+}
+
+func TestLangSmithReferencesRemovedFromServerRuntime(t *testing.T) {
+	for _, path := range []string{
+		"config.go",
+		"direct_ai.go",
+		"../../.env.example",
+		"../../fly.toml",
+		"../../README.md",
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if strings.Contains(strings.ToLower(string(data)), "langsmith") {
+			t.Fatalf("%s should not contain LangSmith references", path)
+		}
+	}
+	if _, err := os.Stat("../../pkg/langsmith"); !os.IsNotExist(err) {
+		t.Fatalf("server/pkg/langsmith should be removed, stat err=%v", err)
 	}
 }
 
@@ -376,6 +398,31 @@ func TestMemoryPageRendersStandaloneViewer(t *testing.T) {
 	historyGrid := html[gridStart:]
 	if strings.Contains(historyGrid, `设备 / Redis Key`) {
 		t.Fatal("history grid should only contain the message timeline and detail panels")
+	}
+}
+
+func TestMemoryMessageButtonsUseValidInlineContent(t *testing.T) {
+	html := memoryHTML(map[string]any{"sub": "logto-user"})
+
+	for _, fragment := range []string{
+		`const button = document.createElement("button");`,
+		`const head = document.createElement("span");`,
+		`const content = document.createElement("span");`,
+		`.message { width: 100%;`,
+		`.content { display: block;`,
+		`overflow-wrap: anywhere;`,
+	} {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("memory page missing valid message layout fragment %s", fragment)
+		}
+	}
+	for _, fragment := range []string{
+		`const head = document.createElement("div");`,
+		`const content = document.createElement("div");`,
+	} {
+		if strings.Contains(html, fragment) {
+			t.Fatalf("message buttons should not contain block div children: %s", fragment)
+		}
 	}
 }
 

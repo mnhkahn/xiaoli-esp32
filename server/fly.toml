@@ -35,7 +35,6 @@ primary_region = "nrt"
   STUDY_MONITOR_CAMERA_TOOL = "self.camera.take_photo"
   STUDY_MONITOR_TOOL_TIMEOUT_SECONDS = "120"
   STUDY_MONITOR_REMINDER_TEXT = "请坐直，认真学习。"
-  LANGSMITH_PROJECT = "xiaoli-server"
 
 [http_service]
   internal_port = 8080

@@ -1484,13 +1484,13 @@ func memoryHTML(user map[string]any) string {
     .list { display: grid; gap: 8px; max-height: 72vh; overflow: auto; padding-right: 4px; }
     .item { text-align: left; display: grid; gap: 4px; border-radius: 6px; }
     .item.active { border-color: #0f766e; box-shadow: 0 0 0 1px #0f766e inset; }
-    .message { border: 1px solid #d9dee7; border-left-width: 4px; border-radius: 6px; padding: 10px; display: grid; gap: 6px; text-align: left; background: #fff; }
+    .message { width: 100%; border: 1px solid #d9dee7; border-left-width: 4px; border-radius: 6px; padding: 10px; display: grid; gap: 6px; text-align: left; align-items: start; overflow: hidden; background: #fff; }
     .message.user { border-left-color: #2563eb; background: #eff6ff; }
     .message.assistant { border-left-color: #0f766e; background: #ecfdf5; }
     .message.tool { border-left-color: #9333ea; background: #faf5ff; }
     .message.active { outline: 2px solid #17202a; }
-    .message-head { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: #667085; }
-    .content { white-space: pre-wrap; word-break: break-word; }
+    .message-head { display: flex; width: 100%; justify-content: space-between; gap: 8px; font-size: 12px; color: #667085; }
+    .content { display: block; width: 100%; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; line-height: 1.45; }
     .stats { display: flex; gap: 8px; flex-wrap: wrap; }
     .pill { border-radius: 999px; padding: 2px 8px; font-size: 12px; background: #eef2f6; color: #667085; }
     .pill.ok { background: #dcfae6; color: #067647; }
@@ -1625,7 +1625,7 @@ func memoryHTML(user map[string]any) string {
         button.className = "message " + (msg.role || "");
         button.onclick = () => selectMessage(msg);
 
-        const head = document.createElement("div");
+        const head = document.createElement("span");
         head.className = "message-head";
         const left = document.createElement("span");
         left.textContent = "#" + msg.index + " " + (msg.role || "");
@@ -1634,7 +1634,7 @@ func memoryHTML(user map[string]any) string {
         head.appendChild(left);
         head.appendChild(right);
 
-        const content = document.createElement("div");
+        const content = document.createElement("span");
         content.className = "content";
         content.textContent = msg.content || msg.reasoning_content || "(no text content)";
         button.appendChild(head);

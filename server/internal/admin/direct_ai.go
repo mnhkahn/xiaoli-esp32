@@ -22,7 +22,6 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
-	"xiaoli/server/pkg/langsmith"
 
 	einojsonschema "github.com/eino-contrib/jsonschema"
 )
@@ -467,7 +466,6 @@ type EinoAgent struct {
 	memory    *redisMemory
 	cfg       Config
 	hub       *DeviceHub
-	langsmith *langsmith.CallbackHandler
 }
 
 func newEinoAgent(cfg Config) *EinoAgent {
@@ -495,22 +493,8 @@ func newEinoAgent(cfg Config) *EinoAgent {
 
 	memory := newRedisMemory(cfg)
 
-	var lsHandler *langsmith.CallbackHandler
-	if cfg.LangSmithTracing && cfg.LangSmithAPIKey != "" {
-		var err2 error
-		lsHandler, err2 = langsmith.NewLangsmithHandler(&langsmith.Config{
-			APIKey:  cfg.LangSmithAPIKey,
-			Timeout: 30 * time.Second,
-		})
-		if err2 != nil {
-			log.Printf("langsmith handler init failed: %v", err2)
-		} else {
-			log.Printf("langsmith tracing enabled, project=%s", cfg.LangSmithProject)
-		}
-	}
-
-	log.Printf("eino agent ready: model=%s base=%s redis=%v langsmith=%v", cfg.GoLLMModel, baseURL, memory != nil, lsHandler != nil)
-	return &EinoAgent{chatModel: chatModel, memory: memory, cfg: cfg, langsmith: lsHandler}
+	log.Printf("eino agent ready: model=%s base=%s redis=%v", cfg.GoLLMModel, baseURL, memory != nil)
+	return &EinoAgent{chatModel: chatModel, memory: memory, cfg: cfg}
 }
 
 func (a *EinoAgent) SetHub(hub *DeviceHub) {
@@ -519,7 +503,7 @@ func (a *EinoAgent) SetHub(hub *DeviceHub) {
 
 // Chat sends userText through the Eino agent with memory and optional MCP tools.
 func (a *EinoAgent) Chat(ctx context.Context, deviceID string, userText string) (string, error) {
-	log.Printf("EinoAgent.Chat called: device=%s text=%q langsmith=%v", deviceID, userText, a.langsmith != nil)
+	log.Printf("EinoAgent.Chat called: device=%s text=%q", deviceID, userText)
 
 	// Load conversation history
 	history := a.memory.Load(ctx, deviceID)
@@ -560,18 +544,11 @@ func (a *EinoAgent) Chat(ctx context.Context, deviceID string, userText string) 
 		return "", fmt.Errorf("create agent: %w", err)
 	}
 
-	// Attach LangSmith tracing if configured — use Runner so callbacks
-	// go through flowAgent.initAgentCallbacks into the context.
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{
 		Agent: agent,
 	})
-	var runOpts []adk.AgentRunOption
-	if a.langsmith != nil {
-		ctx = langsmith.SetTrace(ctx, langsmith.WithSessionName(a.cfg.LangSmithProject))
-		runOpts = append(runOpts, adk.WithCallbacks(a.langsmith))
-	}
 
-	iter := runner.Run(ctx, msgs, runOpts...)
+	iter := runner.Run(ctx, msgs)
 
 	var result *schema.Message
 	eventCount := 0
