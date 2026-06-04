@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloudwego/eino-ext/callbacks/langsmith"
 	einomodel "github.com/cloudwego/eino-ext/components/model/openai"
+	"xiaoli/server/pkg/langsmith"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/callbacks"
 	"github.com/cloudwego/eino/components"

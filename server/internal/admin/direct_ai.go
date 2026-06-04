@@ -17,8 +17,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/cloudwego/eino-ext/callbacks/langsmith"
 	"github.com/cloudwego/eino-ext/components/model/openai"
+	"xiaoli/server/pkg/langsmith"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
@@ -399,7 +399,8 @@ func newEinoAgent(cfg Config) *EinoAgent {
 	if cfg.LangSmithTracing && cfg.LangSmithAPIKey != "" {
 		var err2 error
 		lsHandler, err2 = langsmith.NewLangsmithHandler(&langsmith.Config{
-			APIKey: cfg.LangSmithAPIKey,
+			APIKey:  cfg.LangSmithAPIKey,
+			Timeout: 30 * time.Second,
 		})
 		if err2 != nil {
 			log.Printf("langsmith handler init failed: %v", err2)
