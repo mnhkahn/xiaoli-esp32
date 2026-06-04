@@ -106,3 +106,46 @@ func TestReencodeOpusFrames20To60(t *testing.T) {
 		}
 	}
 }
+
+func TestReencodeOpusFramesRounded20To60(t *testing.T) {
+	const sampleRate = 16000
+	const srcFrameMs = 20
+	const targetFrameMs = 60
+
+	enc, _ := opus.NewEncoder(sampleRate, 1, opus.AppVoIP)
+	dec, _ := opus.NewDecoder(sampleRate, 1)
+
+	var packets [][]byte
+	for i := 0; i < 6; i++ {
+		pcm := make([]int16, sampleRate/1000*srcFrameMs)
+		for j := range pcm {
+			pcm[j] = int16((i + 1) * (j % 64))
+		}
+		buf := make([]byte, 1024)
+		n, _ := enc.Encode(pcm, buf)
+		pkt := make([]byte, n)
+		copy(pkt, buf[:n])
+		packets = append(packets, pkt)
+	}
+
+	reencoded, frameDur, err := reencodeOpusFrames(packets, sampleRate, 19*time.Millisecond+900*time.Microsecond, targetFrameMs)
+	if err != nil {
+		t.Fatalf("reencodeOpusFrames: %v", err)
+	}
+	if frameDur != time.Duration(targetFrameMs)*time.Millisecond {
+		t.Errorf("frameDuration: got %v want %v", frameDur, time.Duration(targetFrameMs)*time.Millisecond)
+	}
+	if len(reencoded) != 2 {
+		t.Fatalf("reencoded count: got %d want 2", len(reencoded))
+	}
+	for i, pkt := range reencoded {
+		pcm := make([]int16, 960)
+		n, err := dec.Decode(pkt, pcm)
+		if err != nil {
+			t.Fatalf("Decode packet %d: %v", i, err)
+		}
+		if n != 960 {
+			t.Errorf("packet %d: decoded %d samples, want 960", i, n)
+		}
+	}
+}

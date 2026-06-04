@@ -260,11 +260,6 @@ func reencodeOpusFrames(packets [][]byte, sampleRate int, srcFrameDuration time.
 	if targetFrameDurationMs <= 0 {
 		targetFrameDurationMs = 60
 	}
-	srcFrameMs := int(srcFrameDuration / time.Millisecond)
-	if srcFrameMs <= 0 {
-		srcFrameMs = 20
-	}
-
 	dec, err := opus.NewDecoder(sampleRate, 1)
 	if err != nil {
 		return nil, 0, err
@@ -274,18 +269,21 @@ func reencodeOpusFrames(packets [][]byte, sampleRate int, srcFrameDuration time.
 		return nil, 0, err
 	}
 
-	srcFrameSize := sampleRate / 1000 * srcFrameMs
+	decodeFrameSize := sampleRate / 1000 * 120
 	targetFrameSize := sampleRate / 1000 * targetFrameDurationMs
 
 	// Decode all packets into a single PCM buffer
 	var pcm []int16
 	for _, pkt := range packets {
-		buf := make([]int16, srcFrameSize)
+		buf := make([]int16, decodeFrameSize)
 		n, err := dec.Decode(pkt, buf)
 		if err != nil {
 			continue
 		}
 		pcm = append(pcm, buf[:n]...)
+	}
+	if len(pcm) == 0 {
+		return nil, 0, errors.New("no opus packets decoded")
 	}
 
 	// Re-encode at target frame duration

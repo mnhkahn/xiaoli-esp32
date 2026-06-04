@@ -476,12 +476,15 @@ func (h *DeviceHub) playAssistantText(ctx context.Context, session *deviceSessio
 	if h.tts == nil {
 		return fmt.Errorf("TTS is not configured")
 	}
+	started := time.Now()
+	synthStarted := time.Now()
 	contentType, body, err := h.tts.Synthesize(ctx, text)
 	if err != nil {
 		log.Printf("tts synth failed for %s: text=%q err=%v", session.deviceID, text, err)
 		return err
 	}
-	log.Printf("tts synth ok for %s: text=%q contentType=%s bytes=%d", session.deviceID, text, contentType, len(body))
+	synthElapsed := time.Since(synthStarted)
+	log.Printf("tts synth ok for %s: text=%q contentType=%s bytes=%d synthMS=%d", session.deviceID, text, contentType, len(body), synthElapsed.Milliseconds())
 
 	packets, frameDuration := extractOpusPackets(body)
 	if len(packets) == 0 {
@@ -493,15 +496,20 @@ func (h *DeviceHub) playAssistantText(ctx context.Context, session *deviceSessio
 	}
 
 	// Re-encode at 60ms to match device decoder's frame_duration.
+	reencodeStarted := time.Now()
 	reencoded, targetFrameDuration, err := reencodeOpusFrames(packets, directDeviceAudioSampleRate, frameDuration, directDeviceAudioFrameDurationMS)
+	reencodeElapsed := time.Since(reencodeStarted)
 	if err != nil || len(reencoded) == 0 {
-		log.Printf("tts reencode failed for %s: %v, falling back to raw packets", session.deviceID, err)
+		log.Printf("tts reencode failed for %s: err=%v reencoded=%d reencodeMS=%d, falling back to raw packets", session.deviceID, err, len(reencoded), reencodeElapsed.Milliseconds())
 		reencoded = packets
 		targetFrameDuration = frameDuration
 	}
 
-	log.Printf("tts stream start for %s: packets=%d reencoded=%d srcFrameDur=%s targetFrameDur=%s prebuffer=%d", session.deviceID, len(packets), len(reencoded), frameDuration, targetFrameDuration, assistantAudioPrebufferPacketNum)
+	sourceAudioDuration := time.Duration(len(packets)) * frameDuration
+	targetAudioDuration := time.Duration(len(reencoded)) * targetFrameDuration
+	log.Printf("tts stream start for %s: packets=%d reencoded=%d srcFrameDur=%s targetFrameDur=%s srcAudioDur=%s targetAudioDur=%s prebuffer=%d reencodeMS=%d", session.deviceID, len(packets), len(reencoded), frameDuration, targetFrameDuration, sourceAudioDuration, targetAudioDuration, assistantAudioPrebufferPacketNum, reencodeElapsed.Milliseconds())
 
+	streamStarted := time.Now()
 	var pacedStart time.Time
 	for i, pkt := range reencoded {
 		if i == assistantAudioPrebufferPacketNum {
@@ -516,7 +524,7 @@ func (h *DeviceHub) playAssistantText(ctx context.Context, session *deviceSessio
 			return err
 		}
 	}
-	log.Printf("tts stream done for %s: sent %d packets", session.deviceID, len(reencoded))
+	log.Printf("tts stream done for %s: sent=%d streamMS=%d totalMS=%d", session.deviceID, len(reencoded), time.Since(streamStarted).Milliseconds(), time.Since(started).Milliseconds())
 	return nil
 }
 
