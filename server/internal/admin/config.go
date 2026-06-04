@@ -52,6 +52,11 @@ type Config struct {
 	StudyMonitorCameraTool  string
 	StudyMonitorReminder    string
 	StudyMonitorToolTimeout time.Duration
+	MorningGreetingEnabled  bool
+	MorningGreetingTimezone string
+	MorningGreetingHour     int
+	MorningGreetingMinute   int
+	MorningGreetingText     string
 	LarkWebhookURL          string
 	LarkAppID               string
 	LarkAppSecret           string
@@ -108,6 +113,11 @@ func LoadConfig() Config {
 		StudyMonitorCameraTool:  env("STUDY_MONITOR_CAMERA_TOOL", "self.camera.take_photo"),
 		StudyMonitorReminder:    env("STUDY_MONITOR_REMINDER_TEXT", "请坐直，认真学习。"),
 		StudyMonitorToolTimeout: time.Duration(envInt("STUDY_MONITOR_TOOL_TIMEOUT_SECONDS", 120)) * time.Second,
+		MorningGreetingEnabled:  envBool("MORNING_GREETING_ENABLED", true),
+		MorningGreetingTimezone: env("MORNING_GREETING_TIMEZONE", "Asia/Shanghai"),
+		MorningGreetingHour:     envInt("MORNING_GREETING_HOUR", 8),
+		MorningGreetingMinute:   envInt("MORNING_GREETING_MINUTE", 0),
+		MorningGreetingText:     env("MORNING_GREETING_TEXT", "早上好。"),
 		LarkWebhookURL:          env("LARK_BOT_WEBHOOK_URL", ""),
 		LarkAppID:               env("LARK_APP_ID", ""),
 		LarkAppSecret:           env("LARK_APP_SECRET", ""),

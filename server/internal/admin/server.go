@@ -488,6 +488,15 @@ func (s *AdminServer) schedules() []map[string]any {
 			"camera_tool":      s.cfg.StudyMonitorCameraTool,
 			"reminder_text":    s.cfg.StudyMonitorReminder,
 		},
+		{
+			"id":          "morning_greeting",
+			"name":        "早安问候",
+			"description": "每天早上固定时间向在线设备播放问候语；没有在线设备时跳过，不补播。",
+			"enabled":     s.cfg.MorningGreetingEnabled,
+			"timezone":    s.cfg.MorningGreetingTimezone,
+			"time":        fmt.Sprintf("%02d:%02d", clampInt(s.cfg.MorningGreetingHour, 0, 23, 8), clampInt(s.cfg.MorningGreetingMinute, 0, 59, 0)),
+			"text":        firstText(strings.TrimSpace(s.cfg.MorningGreetingText), "早上好。"),
+		},
 	}
 }
 

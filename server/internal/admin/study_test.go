@@ -62,6 +62,29 @@ func TestStudyMonitorSlotUsesConfiguredWindow(t *testing.T) {
 	}
 }
 
+func TestMorningGreetingSlotFiresAtConfiguredTime(t *testing.T) {
+	cfg := testConfig()
+	cfg.MorningGreetingTimezone = "Asia/Shanghai"
+	cfg.MorningGreetingHour = 8
+	cfg.MorningGreetingMinute = 0
+	srv := NewServer(cfg)
+	before := time.Date(2026, 6, 4, 7, 59, 30, 0, time.FixedZone("CST", 8*3600))
+	atTime := time.Date(2026, 6, 4, 8, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	later := time.Date(2026, 6, 4, 8, 0, 59, 0, time.FixedZone("CST", 8*3600))
+
+	if slot := srv.morningGreetingSlot(before); slot != nil {
+		t.Fatalf("slot = %v before greeting time", *slot)
+	}
+	firstSlot := srv.morningGreetingSlot(atTime)
+	if firstSlot == nil {
+		t.Fatal("slot is nil at greeting time")
+	}
+	secondSlot := srv.morningGreetingSlot(later)
+	if secondSlot == nil || *secondSlot != *firstSlot {
+		t.Fatalf("slot within same minute = %v, want %v", secondSlot, firstSlot)
+	}
+}
+
 func TestBuildLarkPostPayloadIncludesImageAndReminder(t *testing.T) {
 	srv := NewServer(testConfig())
 	payload := srv.buildLarkPostPayload(studyLarkPayloadInput{

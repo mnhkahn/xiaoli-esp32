@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"strings"
@@ -36,6 +37,9 @@ type studyDecision struct {
 func (s *AdminServer) StartBackground(ctx context.Context) {
 	if s.cfg.StudyMonitorEnabled {
 		go s.runStudyMonitorScheduler(ctx)
+	}
+	if s.cfg.MorningGreetingEnabled {
+		go s.runMorningGreetingScheduler(ctx)
 	}
 }
 
@@ -92,6 +96,72 @@ func (s *AdminServer) inStudyMonitorWindow(checkedAt time.Time) bool {
 		return start <= hour && hour < end
 	}
 	return hour >= start || hour < end
+}
+
+func (s *AdminServer) runMorningGreetingScheduler(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	var lastSlot int64
+	for {
+		now := s.morningGreetingNow()
+		if slot := s.morningGreetingSlot(now); slot != nil && *slot != lastSlot {
+			lastSlot = *slot
+			if err := s.runMorningGreetingOnce(ctx, now); err != nil {
+				log.Printf("morning greeting failed: %v", err)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *AdminServer) morningGreetingNow() time.Time {
+	location, err := time.LoadLocation(s.cfg.MorningGreetingTimezone)
+	if err != nil {
+		location = time.FixedZone("CST", 8*3600)
+	}
+	return s.cfg.now().In(location)
+}
+
+func (s *AdminServer) morningGreetingSlot(checkedAt time.Time) *int64 {
+	location, err := time.LoadLocation(s.cfg.MorningGreetingTimezone)
+	if err == nil {
+		checkedAt = checkedAt.In(location)
+	}
+	hour := clampInt(s.cfg.MorningGreetingHour, 0, 23, 8)
+	minute := clampInt(s.cfg.MorningGreetingMinute, 0, 59, 0)
+	if checkedAt.Hour() != hour || checkedAt.Minute() != minute {
+		return nil
+	}
+	dayStart := time.Date(checkedAt.Year(), checkedAt.Month(), checkedAt.Day(), 0, 0, 0, 0, checkedAt.Location())
+	slot := dayStart.Unix()
+	return &slot
+}
+
+func (s *AdminServer) runMorningGreetingOnce(ctx context.Context, checkedAt time.Time) error {
+	controller := s.deviceController()
+	devices, err := controller.Devices(ctx)
+	if err != nil {
+		return err
+	}
+	if len(devices) == 0 {
+		log.Printf("morning greeting skipped at %s: no online device", checkedAt.Format(time.RFC3339))
+		return nil
+	}
+	text := strings.TrimSpace(s.cfg.MorningGreetingText)
+	if text == "" {
+		text = "早上好。"
+	}
+	deviceID := devices[0].DeviceID
+	_, err = controller.Speak(ctx, deviceID, text)
+	if err != nil {
+		return err
+	}
+	log.Printf("morning greeting played for %s at %s: %q", deviceID, checkedAt.Format(time.RFC3339), text)
+	return nil
 }
 
 func (s *AdminServer) runStudyMonitorOnce(ctx context.Context, checkedAt time.Time) error {

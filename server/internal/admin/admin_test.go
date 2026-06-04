@@ -309,7 +309,7 @@ func TestSpeakStopAPIForwardsToBridge(t *testing.T) {
 	}
 }
 
-func TestSchedulesAPIIncludesStudyMonitorTask(t *testing.T) {
+func TestSchedulesAPIIncludesBackgroundTasks(t *testing.T) {
 	cfg := testConfig()
 	cfg.StudyMonitorEnabled = true
 	cfg.StudyMonitorTimezone = "Asia/Shanghai"
@@ -317,6 +317,10 @@ func TestSchedulesAPIIncludesStudyMonitorTask(t *testing.T) {
 	cfg.StudyMonitorEndHour = 21
 	cfg.StudyMonitorInterval = 5 * time.Minute
 	cfg.StudyMonitorCameraTool = "self.camera.take_photo"
+	cfg.MorningGreetingEnabled = true
+	cfg.MorningGreetingTimezone = "Asia/Shanghai"
+	cfg.MorningGreetingHour = 8
+	cfg.MorningGreetingText = "早上好。"
 	srv := NewServer(cfg)
 	session, err := srv.signer.sign(map[string]any{
 		"user": map[string]any{"sub": "logto-user"},
@@ -341,8 +345,8 @@ func TestSchedulesAPIIncludesStudyMonitorTask(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(payload.Schedules) != 1 {
-		t.Fatalf("schedules length = %d, want 1", len(payload.Schedules))
+	if len(payload.Schedules) != 2 {
+		t.Fatalf("schedules length = %d, want 2", len(payload.Schedules))
 	}
 	task := payload.Schedules[0]
 	if task["id"] != "study_monitor" || task["enabled"] != true || task["timezone"] != "Asia/Shanghai" {
@@ -350,6 +354,13 @@ func TestSchedulesAPIIncludesStudyMonitorTask(t *testing.T) {
 	}
 	if task["interval_seconds"] != float64(300) || task["window"] != "17:00-21:00" {
 		t.Fatalf("unexpected schedule timing: %#v", task)
+	}
+	greeting := payload.Schedules[1]
+	if greeting["id"] != "morning_greeting" || greeting["enabled"] != true || greeting["timezone"] != "Asia/Shanghai" {
+		t.Fatalf("unexpected greeting schedule: %#v", greeting)
+	}
+	if greeting["time"] != "08:00" || greeting["text"] != "早上好。" {
+		t.Fatalf("unexpected greeting timing/text: %#v", greeting)
 	}
 }
 
