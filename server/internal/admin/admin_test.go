@@ -359,12 +359,23 @@ func TestMemoryPageRendersStandaloneViewer(t *testing.T) {
 		`/admin/api/memory`,
 		`/admin/api/memory/detail`,
 		`id="memorySort"`,
+		`class="memory-picker"`,
 		`近到远`,
 		`远到近`,
 	} {
 		if !strings.Contains(rr.Body.String(), fragment) {
 			t.Fatalf("memory page missing fragment %s", fragment)
 		}
+	}
+	html := rr.Body.String()
+	pickerStart := strings.Index(html, `class="memory-picker"`)
+	gridStart := strings.Index(html, `class="memory-grid"`)
+	if pickerStart < 0 || gridStart < 0 || pickerStart > gridStart {
+		t.Fatal("memory key list should live in the top filter section before the history grid")
+	}
+	historyGrid := html[gridStart:]
+	if strings.Contains(historyGrid, `设备 / Redis Key`) {
+		t.Fatal("history grid should only contain the message timeline and detail panels")
 	}
 }
 

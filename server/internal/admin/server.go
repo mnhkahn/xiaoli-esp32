@@ -1477,7 +1477,9 @@ func memoryHTML(user map[string]any) string {
     .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .muted { color: #667085; font-size: 13px; }
     .toolbar { display: grid; grid-template-columns: minmax(220px, 1fr) 160px auto; gap: 8px; align-items: center; }
-    .memory-grid { display: grid; grid-template-columns: minmax(260px, 340px) minmax(320px, 1fr) minmax(320px, 520px); gap: 14px; align-items: start; }
+    .memory-picker { margin-top: 12px; display: grid; gap: 10px; }
+    .memory-picker .list { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); max-height: 220px; }
+    .memory-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(340px, .75fr); gap: 14px; align-items: start; }
     .panel { display: grid; gap: 10px; min-width: 0; }
     .list { display: grid; gap: 8px; max-height: 72vh; overflow: auto; padding-right: 4px; }
     .item { text-align: left; display: grid; gap: 4px; border-radius: 6px; }
@@ -1511,12 +1513,15 @@ func memoryHTML(user map[string]any) string {
         <button id="refreshMemory" class="primary">刷新</button>
       </div>
       <div id="memoryStatus" class="muted" style="margin-top:10px;">加载中...</div>
-    </section>
-    <section class="memory-grid">
-      <div class="panel">
-        <h2>设备 / Redis Key</h2>
+      <div class="memory-picker">
+        <div class="row">
+          <h2>设备 / Redis Key</h2>
+          <span class="muted">选择一个设备后查看下面的历史记录。</span>
+        </div>
         <div id="memoryList" class="list"></div>
       </div>
+    </section>
+    <section class="memory-grid">
       <div class="panel">
         <h2>消息时间线</h2>
         <div id="messageList" class="list"></div>
