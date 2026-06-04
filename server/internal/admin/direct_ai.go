@@ -18,11 +18,11 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
-	"xiaoli/server/pkg/langsmith"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
+	"xiaoli/server/pkg/langsmith"
 
 	einojsonschema "github.com/eino-contrib/jsonschema"
 )
@@ -222,6 +222,28 @@ type redisMemory struct {
 	ttl    time.Duration
 }
 
+type memoryReader interface {
+	Enabled() bool
+	Prefix() string
+	List(ctx context.Context, limit int) ([]memoryKeyInfo, error)
+	LoadRaw(ctx context.Context, deviceID string) (memoryValue, error)
+}
+
+type memoryKeyInfo struct {
+	Key        string `json:"key"`
+	DeviceID   string `json:"device_id"`
+	TTLSeconds int64  `json:"ttl_seconds"`
+	Bytes      int    `json:"bytes"`
+}
+
+type memoryValue struct {
+	Key        string `json:"key"`
+	DeviceID   string `json:"device_id"`
+	TTLSeconds int64  `json:"ttl_seconds"`
+	Bytes      int    `json:"bytes"`
+	Raw        []byte `json:"-"`
+}
+
 func newRedisMemory(cfg Config) *redisMemory {
 	if cfg.RedisURL == "" {
 		return nil
@@ -240,6 +262,84 @@ func newRedisMemory(cfg Config) *redisMemory {
 	}
 	log.Printf("redis memory connected, prefix=%s ttl=%s", cfg.RedisKeyPrefix, cfg.MemoryTTL)
 	return &redisMemory{client: client, prefix: cfg.RedisKeyPrefix, ttl: cfg.MemoryTTL}
+}
+
+func (m *redisMemory) Enabled() bool {
+	return m != nil && m.client != nil
+}
+
+func (m *redisMemory) Prefix() string {
+	if m == nil {
+		return ""
+	}
+	return m.prefix
+}
+
+func (m *redisMemory) List(ctx context.Context, limit int) ([]memoryKeyInfo, error) {
+	if !m.Enabled() {
+		return nil, errors.New("redis memory is not configured")
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	pattern := m.prefix + "*"
+	var cursor uint64
+	items := make([]memoryKeyInfo, 0)
+	for {
+		keys, next, err := m.client.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return nil, err
+		}
+		for _, key := range keys {
+			info := memoryKeyInfo{
+				Key:      key,
+				DeviceID: strings.TrimPrefix(key, m.prefix),
+			}
+			if ttl, err := m.client.TTL(ctx, key).Result(); err == nil {
+				info.TTLSeconds = ttlSeconds(ttl)
+			}
+			if size, err := m.client.StrLen(ctx, key).Result(); err == nil {
+				info.Bytes = int(size)
+			}
+			items = append(items, info)
+			if len(items) >= limit {
+				return items, nil
+			}
+		}
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+	return items, nil
+}
+
+func (m *redisMemory) LoadRaw(ctx context.Context, deviceID string) (memoryValue, error) {
+	if !m.Enabled() {
+		return memoryValue{}, errors.New("redis memory is not configured")
+	}
+	key := m.prefix + deviceID
+	data, err := m.client.Get(ctx, key).Bytes()
+	if err != nil {
+		return memoryValue{}, err
+	}
+	value := memoryValue{
+		Key:      key,
+		DeviceID: deviceID,
+		Bytes:    len(data),
+		Raw:      data,
+	}
+	if ttl, err := m.client.TTL(ctx, key).Result(); err == nil {
+		value.TTLSeconds = ttlSeconds(ttl)
+	}
+	return value, nil
+}
+
+func ttlSeconds(ttl time.Duration) int64 {
+	if ttl < 0 {
+		return int64(ttl)
+	}
+	return int64(ttl.Seconds())
 }
 
 const maxHistoryMessages = 40
@@ -303,9 +403,9 @@ func (t *mcpTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ..
 	}
 	result, err := t.hub.Call(ctx, BridgeCallRequest{
 		DeviceID:  t.deviceID,
-		Tool:     t.info.Name,
+		Tool:      t.info.Name,
 		Arguments: args,
-		Timeout:  30,
+		Timeout:   30,
 	})
 	if err != nil {
 		return fmt.Sprintf("tool call error: %v", err), nil
@@ -363,11 +463,11 @@ func mcpToolsToEinoTools(session *deviceSession, hub *DeviceHub) []tool.BaseTool
 // ---------------------------------------------------------------------------
 
 type EinoAgent struct {
-	chatModel  *openai.ChatModel
-	memory     *redisMemory
-	cfg        Config
-	hub        *DeviceHub
-	langsmith  *langsmith.CallbackHandler
+	chatModel *openai.ChatModel
+	memory    *redisMemory
+	cfg       Config
+	hub       *DeviceHub
+	langsmith *langsmith.CallbackHandler
 }
 
 func newEinoAgent(cfg Config) *EinoAgent {
@@ -381,12 +481,12 @@ func newEinoAgent(cfg Config) *EinoAgent {
 	temp := float32(0.2)
 	maxTokens := 180
 	chatModel, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
-		BaseURL:      baseURL,
-		APIKey:       cfg.GoLLMAPIKey,
-		Model:        cfg.GoLLMModel,
-		Timeout:      cfg.GoLLMTimeout,
-		Temperature:  &temp,
-		MaxTokens:    &maxTokens,
+		BaseURL:     baseURL,
+		APIKey:      cfg.GoLLMAPIKey,
+		Model:       cfg.GoLLMModel,
+		Timeout:     cfg.GoLLMTimeout,
+		Temperature: &temp,
+		MaxTokens:   &maxTokens,
 	})
 	if err != nil {
 		log.Printf("eino chat model init failed: %v", err)

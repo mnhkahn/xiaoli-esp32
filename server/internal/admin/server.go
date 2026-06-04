@@ -21,6 +21,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/cloudwego/eino/schema"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -48,6 +51,7 @@ type AdminServer struct {
 	stream      *streamHub
 	audioStore  *audioStore
 	deviceHub   *DeviceHub
+	memory      memoryReader
 	imagesMu    sync.Mutex
 	images      map[string]imageRecord
 	imagesByDev map[string][]string
@@ -80,6 +84,12 @@ func NewServer(cfg Config) *AdminServer {
 	audioStore := newAudioStore(cfg.now)
 	asr := newOpenAITranscriber(cfg)
 	agent := newEinoAgent(cfg)
+	var memory memoryReader
+	if agent != nil && agent.memory != nil {
+		memory = agent.memory
+	} else {
+		memory = newRedisMemory(cfg)
+	}
 	vision := newGoVisionClient(cfg)
 	tts := newHTTPSpeechSynthesizer(cfg, nil)
 	deviceHub := NewDeviceHub(cfg, stream, audioStore, asr, agent, vision, tts)
@@ -94,6 +104,7 @@ func NewServer(cfg Config) *AdminServer {
 		stream:      stream,
 		audioStore:  audioStore,
 		deviceHub:   deviceHub,
+		memory:      memory,
 		images:      map[string]imageRecord{},
 		imagesByDev: map[string][]string{},
 	}
@@ -124,6 +135,8 @@ func (s *AdminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleInternalLatestImage(w, r)
 	case r.URL.Path == "/admin" || r.URL.Path == "/admin/":
 		s.handleIndex(w, r)
+	case r.URL.Path == "/admin/memory":
+		s.handleMemoryPage(w, r)
 	case r.URL.Path == "/admin/login":
 		s.handleLogin(w, r)
 	case r.URL.Path == "/admin/callback":
@@ -140,6 +153,10 @@ func (s *AdminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.withUser(w, r, s.handleCall)
 	case r.URL.Path == "/admin/api/schedules":
 		s.withUser(w, r, s.handleSchedules)
+	case r.URL.Path == "/admin/api/memory":
+		s.withUser(w, r, s.handleMemoryList)
+	case r.URL.Path == "/admin/api/memory/detail":
+		s.withUser(w, r, s.handleMemoryDetail)
 	case r.URL.Path == "/admin/api/speak":
 		s.withUser(w, r, s.handleSpeak)
 	case r.URL.Path == "/admin/api/speak/stop":
@@ -167,6 +184,16 @@ func (s *AdminServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, dashboardHTML(user))
+}
+
+func (s *AdminServer) handleMemoryPage(w http.ResponseWriter, r *http.Request) {
+	user := s.getUser(r)
+	if user == nil {
+		s.loginRedirect(w, r, safeReturnTo(r.URL.RequestURI()))
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = io.WriteString(w, memoryHTML(user))
 }
 
 func (s *AdminServer) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -461,6 +488,199 @@ func (s *AdminServer) schedules() []map[string]any {
 			"camera_tool":      s.cfg.StudyMonitorCameraTool,
 			"reminder_text":    s.cfg.StudyMonitorReminder,
 		},
+	}
+}
+
+type memoryListItem struct {
+	Key        string `json:"key"`
+	DeviceID   string `json:"device_id"`
+	TTLSeconds int64  `json:"ttl_seconds"`
+	Bytes      int    `json:"bytes"`
+	Online     bool   `json:"online"`
+}
+
+type memoryMessageSummary struct {
+	Index                int                `json:"index"`
+	Role                 string             `json:"role"`
+	Content              string             `json:"content"`
+	Name                 string             `json:"name,omitempty"`
+	ToolCalls            []schema.ToolCall  `json:"tool_calls,omitempty"`
+	ToolCallID           string             `json:"tool_call_id,omitempty"`
+	ToolName             string             `json:"tool_name,omitempty"`
+	FinishReason         string             `json:"finish_reason,omitempty"`
+	Usage                *schema.TokenUsage `json:"usage,omitempty"`
+	ReasoningContent     string             `json:"reasoning_content,omitempty"`
+	MultiContentParts    int                `json:"multi_content_parts,omitempty"`
+	UserInputParts       int                `json:"user_input_parts,omitempty"`
+	AssistantOutputParts int                `json:"assistant_output_parts,omitempty"`
+	RawJSON              string             `json:"raw_json"`
+}
+
+func (s *AdminServer) handleMemoryList(w http.ResponseWriter, r *http.Request, user map[string]any) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	prefix := s.memoryPrefix()
+	devices, deviceErr := s.deviceController().Devices(r.Context())
+	online := map[string]bool{}
+	for _, device := range devices {
+		online[device.DeviceID] = true
+	}
+	if s.memory == nil || !s.memory.Enabled() {
+		payload := map[string]any{
+			"enabled":  false,
+			"prefix":   prefix,
+			"devices":  devices,
+			"memories": []memoryListItem{},
+		}
+		if deviceErr != nil {
+			payload["device_error"] = deviceErr.Error()
+		}
+		writeJSON(w, http.StatusOK, payload)
+		return
+	}
+	keys, err := s.memory.List(r.Context(), 200)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"enabled": true, "prefix": prefix, "error": err.Error()})
+		return
+	}
+	memories := make([]memoryListItem, 0, len(keys))
+	for _, key := range keys {
+		memories = append(memories, memoryListItem{
+			Key:        key.Key,
+			DeviceID:   key.DeviceID,
+			TTLSeconds: key.TTLSeconds,
+			Bytes:      key.Bytes,
+			Online:     online[key.DeviceID],
+		})
+	}
+	sort.Slice(memories, func(i, j int) bool {
+		if memories[i].DeviceID == memories[j].DeviceID {
+			return memories[i].Key < memories[j].Key
+		}
+		return memories[i].DeviceID < memories[j].DeviceID
+	})
+	payload := map[string]any{
+		"enabled":  true,
+		"prefix":   prefix,
+		"devices":  devices,
+		"memories": memories,
+	}
+	if deviceErr != nil {
+		payload["device_error"] = deviceErr.Error()
+	}
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *AdminServer) handleMemoryDetail(w http.ResponseWriter, r *http.Request, user map[string]any) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	deviceID := strings.TrimSpace(r.URL.Query().Get("device_id"))
+	if deviceID == "" {
+		http.Error(w, "device_id is required", http.StatusBadRequest)
+		return
+	}
+	order := normalizeMemoryOrder(r.URL.Query().Get("order"))
+	prefix := s.memoryPrefix()
+	if s.memory == nil || !s.memory.Enabled() {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"enabled":   false,
+			"prefix":    prefix,
+			"device_id": deviceID,
+			"order":     order,
+			"messages":  []memoryMessageSummary{},
+		})
+		return
+	}
+	value, err := s.memory.LoadRaw(r.Context(), deviceID)
+	if err != nil {
+		if errors.Is(err, redis.Nil) || strings.TrimSpace(err.Error()) == "redis: nil" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, http.StatusBadGateway, map[string]any{"enabled": true, "prefix": prefix, "device_id": deviceID, "error": err.Error()})
+		return
+	}
+	messages, parseErr := summarizeMemoryMessages(value.Raw)
+	if order == "newest" {
+		reverseMemoryMessages(messages)
+	}
+	payload := map[string]any{
+		"enabled":       true,
+		"prefix":        prefix,
+		"key":           value.Key,
+		"device_id":     value.DeviceID,
+		"ttl_seconds":   value.TTLSeconds,
+		"bytes":         value.Bytes,
+		"order":         order,
+		"message_count": len(messages),
+		"messages":      messages,
+		"raw_json":      string(value.Raw),
+	}
+	if parseErr != nil {
+		payload["parse_error"] = parseErr.Error()
+	}
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *AdminServer) memoryPrefix() string {
+	if s.memory != nil && s.memory.Prefix() != "" {
+		return s.memory.Prefix()
+	}
+	return s.cfg.RedisKeyPrefix
+}
+
+func normalizeMemoryOrder(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), "oldest") {
+		return "oldest"
+	}
+	return "newest"
+}
+
+func summarizeMemoryMessages(raw []byte) ([]memoryMessageSummary, error) {
+	if len(raw) == 0 {
+		return []memoryMessageSummary{}, nil
+	}
+	var messages []*schema.Message
+	if err := json.Unmarshal(raw, &messages); err != nil {
+		return []memoryMessageSummary{}, err
+	}
+	summaries := make([]memoryMessageSummary, 0, len(messages))
+	for i, message := range messages {
+		if message == nil {
+			continue
+		}
+		item := memoryMessageSummary{
+			Index:                i,
+			Role:                 string(message.Role),
+			Content:              message.Content,
+			Name:                 message.Name,
+			ToolCalls:            message.ToolCalls,
+			ToolCallID:           message.ToolCallID,
+			ToolName:             message.ToolName,
+			ReasoningContent:     message.ReasoningContent,
+			MultiContentParts:    len(message.MultiContent),
+			UserInputParts:       len(message.UserInputMultiContent),
+			AssistantOutputParts: len(message.AssistantGenMultiContent),
+		}
+		if message.ResponseMeta != nil {
+			item.FinishReason = message.ResponseMeta.FinishReason
+			item.Usage = message.ResponseMeta.Usage
+		}
+		if encoded, err := json.Marshal(message); err == nil {
+			item.RawJSON = string(encoded)
+		}
+		summaries = append(summaries, item)
+	}
+	return summaries, nil
+}
+
+func reverseMemoryMessages(messages []memoryMessageSummary) {
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
 	}
 }
 
@@ -863,7 +1083,7 @@ func dashboardHTML(user map[string]any) string {
 <body>
   <header>
     <h1>小李设备后台</h1>
-    <div class="row"><span class="muted">` + userLabel + `</span><a href="/admin/logout">退出</a></div>
+    <div class="row"><a href="/admin/memory">记忆查看</a><span class="muted">` + userLabel + `</span><a href="/admin/logout">退出</a></div>
   </header>
   <main>
     <section id="deviceBar">
@@ -1227,6 +1447,249 @@ func dashboardHTML(user map[string]any) string {
     };
     $("refreshSchedules").onclick = () => withBusy($("refreshSchedules"), "刷新中...", loadSchedules).catch(err => $("schedules").textContent = String(err));
     loadDevices().catch(err => show(String(err)));
+  </script>
+</body>
+	</html>`
+}
+
+func memoryHTML(user map[string]any) string {
+	userLabel := html.EscapeString(firstNonEmpty(user, "email", "name", "sub"))
+	return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>小李记忆查看</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #17202a; overflow-x: hidden; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 20px; border-bottom: 1px solid #d9dee7; background: #fff; }
+    h1 { margin: 0; font-size: 18px; font-weight: 650; }
+    h2 { margin: 0; font-size: 15px; }
+    a { color: #0f766e; text-decoration: none; }
+    main { max-width: 1480px; margin: 0 auto; padding: 18px; display: grid; gap: 14px; }
+    section { background: #fff; border: 1px solid #d9dee7; border-radius: 8px; padding: 14px; }
+    button, select, input { font: inherit; }
+    button { border: 1px solid #d9dee7; background: #fff; border-radius: 6px; padding: 8px 10px; cursor: pointer; min-height: 36px; }
+    button.primary { background: #0f766e; border-color: #0f766e; color: #fff; }
+    select, input { width: 100%; border: 1px solid #d9dee7; border-radius: 6px; padding: 8px; background: #fff; min-height: 36px; }
+    pre { margin: 0; white-space: pre-wrap; word-break: break-word; background: #101828; color: #e6edf3; border-radius: 6px; padding: 12px; min-height: 240px; max-height: 62vh; overflow: auto; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .muted { color: #667085; font-size: 13px; }
+    .toolbar { display: grid; grid-template-columns: minmax(220px, 1fr) 160px auto; gap: 8px; align-items: center; }
+    .memory-grid { display: grid; grid-template-columns: minmax(260px, 340px) minmax(320px, 1fr) minmax(320px, 520px); gap: 14px; align-items: start; }
+    .panel { display: grid; gap: 10px; min-width: 0; }
+    .list { display: grid; gap: 8px; max-height: 72vh; overflow: auto; padding-right: 4px; }
+    .item { text-align: left; display: grid; gap: 4px; border-radius: 6px; }
+    .item.active { border-color: #0f766e; box-shadow: 0 0 0 1px #0f766e inset; }
+    .message { border: 1px solid #d9dee7; border-left-width: 4px; border-radius: 6px; padding: 10px; display: grid; gap: 6px; text-align: left; background: #fff; }
+    .message.user { border-left-color: #2563eb; background: #eff6ff; }
+    .message.assistant { border-left-color: #0f766e; background: #ecfdf5; }
+    .message.tool { border-left-color: #9333ea; background: #faf5ff; }
+    .message.active { outline: 2px solid #17202a; }
+    .message-head { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: #667085; }
+    .content { white-space: pre-wrap; word-break: break-word; }
+    .stats { display: flex; gap: 8px; flex-wrap: wrap; }
+    .pill { border-radius: 999px; padding: 2px 8px; font-size: 12px; background: #eef2f6; color: #667085; }
+    .pill.ok { background: #dcfae6; color: #067647; }
+    @media (max-width: 1100px) { .memory-grid { grid-template-columns: 1fr; } .toolbar { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="row"><h1>小李记忆查看</h1><a href="/admin">返回设备后台</a></div>
+    <div class="row"><span class="muted">` + userLabel + `</span><a href="/admin/logout">退出</a></div>
+  </header>
+  <main>
+    <section>
+      <div class="toolbar">
+        <input id="memoryFilter" placeholder="过滤 device_id 或 Redis key">
+        <select id="memorySort" aria-label="消息排序">
+          <option value="newest" selected>近到远</option>
+          <option value="oldest">远到近</option>
+        </select>
+        <button id="refreshMemory" class="primary">刷新</button>
+      </div>
+      <div id="memoryStatus" class="muted" style="margin-top:10px;">加载中...</div>
+    </section>
+    <section class="memory-grid">
+      <div class="panel">
+        <h2>设备 / Redis Key</h2>
+        <div id="memoryList" class="list"></div>
+      </div>
+      <div class="panel">
+        <h2>消息时间线</h2>
+        <div id="messageList" class="list"></div>
+      </div>
+      <div class="panel">
+        <h2>消息详情</h2>
+        <div id="memoryMeta" class="stats"></div>
+        <pre id="messageDetail">选择一条消息查看详情。</pre>
+      </div>
+    </section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let memoryState = { memories: [], selectedDevice: "", detail: null, selectedIndex: null };
+
+    async function api(url) {
+      const res = await fetch(url, { credentials: "same-origin" });
+      if (!res.ok) throw new Error(await res.text());
+      return await res.json();
+    }
+
+    function setStatus(text) { $("memoryStatus").textContent = text; }
+    function clearNode(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+    function text(value) { return value === undefined || value === null ? "" : String(value); }
+
+    function filteredMemories() {
+      const query = $("memoryFilter").value.trim().toLowerCase();
+      if (!query) return memoryState.memories;
+      return memoryState.memories.filter(item =>
+        text(item.device_id).toLowerCase().includes(query) ||
+        text(item.key).toLowerCase().includes(query)
+      );
+    }
+
+    function renderMemoryList() {
+      const list = $("memoryList");
+      clearNode(list);
+      const memories = filteredMemories();
+      if (!memories.length) {
+        const empty = document.createElement("p");
+        empty.className = "muted";
+        empty.textContent = "没有匹配的 Redis 记忆 key。";
+        list.appendChild(empty);
+        return;
+      }
+      for (const item of memories) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "item" + (item.device_id === memoryState.selectedDevice ? " active" : "");
+        button.onclick = () => loadDetail(item.device_id);
+
+        const title = document.createElement("strong");
+        title.textContent = item.device_id || "(empty device)";
+        const key = document.createElement("span");
+        key.className = "muted";
+        key.textContent = item.key || "";
+        const meta = document.createElement("span");
+        meta.className = "muted";
+        meta.textContent = "TTL " + item.ttl_seconds + "s / " + item.bytes + " bytes" + (item.online ? " / online" : "");
+        button.appendChild(title);
+        button.appendChild(key);
+        button.appendChild(meta);
+        list.appendChild(button);
+      }
+    }
+
+    function renderDetail() {
+      const list = $("messageList");
+      const meta = $("memoryMeta");
+      clearNode(list);
+      clearNode(meta);
+      $("messageDetail").textContent = "选择一条消息查看详情。";
+      memoryState.selectedIndex = null;
+      const detail = memoryState.detail;
+      if (!detail) return;
+
+      for (const item of [
+        "key: " + (detail.key || ""),
+        "messages: " + (detail.message_count || 0),
+        "ttl: " + (detail.ttl_seconds || 0) + "s",
+        "order: " + (detail.order || "")
+      ]) {
+        const pill = document.createElement("span");
+        pill.className = "pill";
+        pill.textContent = item;
+        meta.appendChild(pill);
+      }
+
+      if (detail.parse_error) {
+        const warning = document.createElement("p");
+        warning.className = "muted";
+        warning.textContent = "JSON 解析失败：" + detail.parse_error;
+        list.appendChild(warning);
+        $("messageDetail").textContent = detail.raw_json || "";
+        return;
+      }
+
+      for (const msg of detail.messages || []) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "message " + (msg.role || "");
+        button.onclick = () => selectMessage(msg);
+
+        const head = document.createElement("div");
+        head.className = "message-head";
+        const left = document.createElement("span");
+        left.textContent = "#" + msg.index + " " + (msg.role || "");
+        const right = document.createElement("span");
+        right.textContent = msg.finish_reason ? "finish: " + msg.finish_reason : "";
+        head.appendChild(left);
+        head.appendChild(right);
+
+        const content = document.createElement("div");
+        content.className = "content";
+        content.textContent = msg.content || msg.reasoning_content || "(no text content)";
+        button.appendChild(head);
+        button.appendChild(content);
+        list.appendChild(button);
+      }
+      if (!(detail.messages || []).length) {
+        const empty = document.createElement("p");
+        empty.className = "muted";
+        empty.textContent = "这个 key 里没有消息。";
+        list.appendChild(empty);
+      }
+    }
+
+    function selectMessage(msg) {
+      memoryState.selectedIndex = msg.index;
+      document.querySelectorAll(".message").forEach(node => node.classList.remove("active"));
+      for (const node of document.querySelectorAll(".message")) {
+        if (node.textContent.startsWith("#" + msg.index + " ")) node.classList.add("active");
+      }
+      $("messageDetail").textContent = JSON.stringify(msg, null, 2);
+    }
+
+    async function loadList() {
+      setStatus("加载中...");
+      const data = await api("/admin/api/memory");
+      if (!data.enabled) {
+        memoryState.memories = [];
+        renderMemoryList();
+        renderDetail();
+        setStatus("Redis memory 未配置。当前 key 前缀：" + (data.prefix || ""));
+        return;
+      }
+      memoryState.memories = data.memories || [];
+      renderMemoryList();
+      const suffix = data.device_error ? "；在线设备读取失败：" + data.device_error : "";
+      setStatus("Redis key 前缀：" + (data.prefix || "") + "；记忆 key 数：" + memoryState.memories.length + suffix);
+      if (memoryState.memories.length) {
+        const keep = memoryState.memories.find(item => item.device_id === memoryState.selectedDevice);
+        await loadDetail((keep || memoryState.memories[0]).device_id);
+      } else {
+        memoryState.detail = null;
+        renderDetail();
+      }
+    }
+
+    async function loadDetail(deviceID) {
+      if (!deviceID) return;
+      memoryState.selectedDevice = deviceID;
+      renderMemoryList();
+      const order = $("memorySort").value || "newest";
+      const data = await api("/admin/api/memory/detail?device_id=" + encodeURIComponent(deviceID) + "&order=" + encodeURIComponent(order));
+      memoryState.detail = data;
+      renderDetail();
+    }
+
+    $("refreshMemory").onclick = () => loadList().catch(err => setStatus(String(err)));
+    $("memoryFilter").oninput = renderMemoryList;
+    $("memorySort").onchange = () => loadDetail(memoryState.selectedDevice).catch(err => setStatus(String(err)));
+    loadList().catch(err => setStatus(String(err)));
   </script>
 </body>
 </html>`

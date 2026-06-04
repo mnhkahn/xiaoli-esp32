@@ -330,6 +330,266 @@ func TestDashboardHasModelFreeSnapshotAction(t *testing.T) {
 	}
 }
 
+func TestDashboardLinksToMemoryViewer(t *testing.T) {
+	html := dashboardHTML(map[string]any{"sub": "logto-user"})
+
+	for _, fragment := range []string{
+		`href="/admin/memory"`,
+		`记忆查看`,
+	} {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("dashboard HTML missing memory viewer fragment %s", fragment)
+		}
+	}
+}
+
+func TestMemoryPageRendersStandaloneViewer(t *testing.T) {
+	cfg := testConfig()
+	srv := NewServer(cfg)
+	req := authenticatedRequest(t, srv, http.MethodGet, "/admin/memory", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	for _, fragment := range []string{
+		`小李记忆查看`,
+		`/admin/api/memory`,
+		`/admin/api/memory/detail`,
+		`id="memorySort"`,
+		`近到远`,
+		`远到近`,
+	} {
+		if !strings.Contains(rr.Body.String(), fragment) {
+			t.Fatalf("memory page missing fragment %s", fragment)
+		}
+	}
+}
+
+func TestMemoryAPIsRequireAuth(t *testing.T) {
+	srv := NewServer(testConfig())
+	for _, path := range []string{
+		"/admin/api/memory",
+		"/admin/api/memory/detail?device_id=device-1",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("%s status = %d, want %d", path, rr.Code, http.StatusUnauthorized)
+		}
+	}
+}
+
+func TestMemoryListReturnsRedisKeysAndDeviceMetadata(t *testing.T) {
+	cfg := testConfig()
+	cfg.DirectDeviceServer = true
+	cfg.RedisKeyPrefix = "xiaoli:cp:"
+	srv := NewServer(cfg)
+	srv.memory = fakeMemoryReader{
+		prefix: "xiaoli:cp:",
+		keys: []memoryKeyInfo{
+			{Key: "xiaoli:cp:device-2", DeviceID: "device-2", TTLSeconds: 1800, Bytes: 20},
+			{Key: "xiaoli:cp:device-1", DeviceID: "device-1", TTLSeconds: 3600, Bytes: 40},
+		},
+	}
+	req := authenticatedRequest(t, srv, http.MethodGet, "/admin/api/memory", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var payload struct {
+		Enabled  bool `json:"enabled"`
+		Prefix   string
+		Memories []struct {
+			Key        string `json:"key"`
+			DeviceID   string `json:"device_id"`
+			TTLSeconds int64  `json:"ttl_seconds"`
+			Bytes      int    `json:"bytes"`
+			Online     bool   `json:"online"`
+		} `json:"memories"`
+		Devices []Device `json:"devices"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !payload.Enabled || payload.Prefix != "xiaoli:cp:" {
+		t.Fatalf("unexpected memory metadata: %#v", payload)
+	}
+	if len(payload.Memories) != 2 {
+		t.Fatalf("memories length = %d, want 2: %#v", len(payload.Memories), payload.Memories)
+	}
+	if payload.Memories[0].DeviceID != "device-1" || payload.Memories[1].DeviceID != "device-2" {
+		t.Fatalf("memories should be sorted by device id: %#v", payload.Memories)
+	}
+	if payload.Memories[0].TTLSeconds != 3600 || payload.Memories[0].Bytes != 40 {
+		t.Fatalf("first memory metadata = %#v, want ttl=3600 bytes=40", payload.Memories[0])
+	}
+	if len(payload.Devices) != 0 {
+		t.Fatalf("direct test hub should have no online devices: %#v", payload.Devices)
+	}
+}
+
+func TestMemoryDetailParsesNewestFirstByDefault(t *testing.T) {
+	cfg := testConfig()
+	cfg.RedisKeyPrefix = "xiaoli:cp:"
+	srv := NewServer(cfg)
+	srv.memory = fakeMemoryReader{
+		prefix: "xiaoli:cp:",
+		values: map[string]memoryValue{
+			"device-1": {
+				Key:        "xiaoli:cp:device-1",
+				DeviceID:   "device-1",
+				TTLSeconds: 3600,
+				Raw:        []byte(`[{"role":"user","content":"old prompt"},{"role":"assistant","content":"middle answer","response_meta":{"finish_reason":"stop","usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13}}},{"role":"user","content":"new prompt"}]`),
+			},
+		},
+	}
+	req := authenticatedRequest(t, srv, http.MethodGet, "/admin/api/memory/detail?device_id=device-1", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var payload struct {
+		Enabled      bool   `json:"enabled"`
+		Key          string `json:"key"`
+		DeviceID     string `json:"device_id"`
+		Order        string `json:"order"`
+		MessageCount int    `json:"message_count"`
+		Messages     []struct {
+			Index        int    `json:"index"`
+			Role         string `json:"role"`
+			Content      string `json:"content"`
+			FinishReason string `json:"finish_reason"`
+			Usage        struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+				TotalTokens      int `json:"total_tokens"`
+			} `json:"usage"`
+		} `json:"messages"`
+		RawJSON string `json:"raw_json"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !payload.Enabled || payload.Key != "xiaoli:cp:device-1" || payload.DeviceID != "device-1" {
+		t.Fatalf("unexpected detail metadata: %#v", payload)
+	}
+	if payload.Order != "newest" || payload.MessageCount != 3 || len(payload.Messages) != 3 {
+		t.Fatalf("unexpected order/count/messages: %#v", payload)
+	}
+	if payload.Messages[0].Index != 2 || payload.Messages[0].Content != "new prompt" || payload.Messages[2].Content != "old prompt" {
+		t.Fatalf("messages should default newest first: %#v", payload.Messages)
+	}
+	if payload.Messages[1].FinishReason != "stop" || payload.Messages[1].Usage.TotalTokens != 13 {
+		t.Fatalf("assistant metadata was not summarized: %#v", payload.Messages[1])
+	}
+	if !strings.Contains(payload.RawJSON, `"old prompt"`) {
+		t.Fatalf("raw_json missing original payload: %s", payload.RawJSON)
+	}
+}
+
+func TestMemoryDetailCanReturnOldestFirst(t *testing.T) {
+	cfg := testConfig()
+	srv := NewServer(cfg)
+	srv.memory = fakeMemoryReader{
+		prefix: "xiaoli:cp:",
+		values: map[string]memoryValue{
+			"device-1": {
+				Key:      "xiaoli:cp:device-1",
+				DeviceID: "device-1",
+				Raw:      []byte(`[{"role":"user","content":"old"},{"role":"assistant","content":"new"}]`),
+			},
+		},
+	}
+	req := authenticatedRequest(t, srv, http.MethodGet, "/admin/api/memory/detail?device_id=device-1&order=oldest", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var payload struct {
+		Order    string `json:"order"`
+		Messages []struct {
+			Index   int    `json:"index"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Order != "oldest" || payload.Messages[0].Index != 0 || payload.Messages[0].Content != "old" {
+		t.Fatalf("messages should be oldest first: %#v", payload)
+	}
+}
+
+func TestMemoryAPIReturnsDisabledWhenRedisMemoryIsNotConfigured(t *testing.T) {
+	srv := NewServer(testConfig())
+	req := authenticatedRequest(t, srv, http.MethodGet, "/admin/api/memory", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var payload struct {
+		Enabled  bool   `json:"enabled"`
+		Prefix   string `json:"prefix"`
+		Memories []any  `json:"memories"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Enabled || payload.Prefix != testConfig().RedisKeyPrefix || len(payload.Memories) != 0 {
+		t.Fatalf("unexpected disabled memory response: %#v", payload)
+	}
+}
+
+func TestMemoryDetailReturnsRawJSONWhenParsingFails(t *testing.T) {
+	cfg := testConfig()
+	srv := NewServer(cfg)
+	srv.memory = fakeMemoryReader{
+		prefix: "xiaoli:cp:",
+		values: map[string]memoryValue{
+			"device-1": {
+				Key:      "xiaoli:cp:device-1",
+				DeviceID: "device-1",
+				Raw:      []byte(`{"not":"an array"`),
+			},
+		},
+	}
+	req := authenticatedRequest(t, srv, http.MethodGet, "/admin/api/memory/detail?device_id=device-1", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var payload struct {
+		ParseError string `json:"parse_error"`
+		RawJSON    string `json:"raw_json"`
+		Messages   []any  `json:"messages"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.ParseError == "" || payload.RawJSON != `{"not":"an array"` || len(payload.Messages) != 0 {
+		t.Fatalf("malformed JSON response = %#v", payload)
+	}
+}
+
 func TestStreamStartAPIInvokesCameraStreamWithResolution(t *testing.T) {
 	var received BridgeCallRequest
 	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -828,4 +1088,48 @@ func findCookie(cookies []*http.Cookie, name string) *http.Cookie {
 		}
 	}
 	return nil
+}
+
+type fakeMemoryReader struct {
+	prefix string
+	keys   []memoryKeyInfo
+	values map[string]memoryValue
+}
+
+func (f fakeMemoryReader) Enabled() bool { return true }
+
+func (f fakeMemoryReader) Prefix() string { return f.prefix }
+
+func (f fakeMemoryReader) List(ctx context.Context, limit int) ([]memoryKeyInfo, error) {
+	if limit > 0 && len(f.keys) > limit {
+		return f.keys[:limit], nil
+	}
+	return f.keys, nil
+}
+
+func (f fakeMemoryReader) LoadRaw(ctx context.Context, deviceID string) (memoryValue, error) {
+	value, ok := f.values[deviceID]
+	if !ok {
+		return memoryValue{}, redisNilError{}
+	}
+	return value, nil
+}
+
+type redisNilError struct{}
+
+func (redisNilError) Error() string { return "redis: nil" }
+
+func authenticatedRequest(t *testing.T, srv *AdminServer, method string, target string, body io.Reader) *http.Request {
+	t.Helper()
+	session, err := srv.signer.sign(map[string]any{
+		"user": map[string]any{"sub": "logto-user"},
+		"iat":  srv.cfg.now().Unix(),
+		"exp":  srv.cfg.now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("sign session: %v", err)
+	}
+	req := httptest.NewRequest(method, target, body)
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: session})
+	return req
 }
