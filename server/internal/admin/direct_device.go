@@ -566,6 +566,9 @@ func (s *deviceSession) callMCP(ctx context.Context, method string, params map[s
 		return mcpCallResult{}, err
 	}
 	log.Printf("mcp call sent to %s id=%d method=%s", s.deviceID, id, method)
+	s.voiceMu.Lock()
+	s.lastVoiceActivity = time.Now()
+	s.voiceMu.Unlock()
 	select {
 	case result, ok := <-ch:
 		if !ok {
