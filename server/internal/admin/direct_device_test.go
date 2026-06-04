@@ -104,3 +104,27 @@ func readServerFrame(conn net.Conn) (byte, []byte, error) {
 	}
 	return opcode, payload, nil
 }
+
+func TestAssistantAudioSendDeadlineMatchesPythonPrebuffer(t *testing.T) {
+	pacedStart := time.Unix(100, 0)
+	frameDuration := 60 * time.Millisecond
+
+	for packetIndex := 0; packetIndex <= 5; packetIndex++ {
+		if got := assistantAudioSendDeadline(pacedStart, packetIndex, frameDuration); !got.IsZero() {
+			t.Fatalf("packet %d deadline = %v, want immediate send", packetIndex, got)
+		}
+	}
+
+	tests := []struct {
+		packetIndex int
+		want        time.Time
+	}{
+		{packetIndex: 6, want: pacedStart.Add(60 * time.Millisecond)},
+		{packetIndex: 9, want: pacedStart.Add(240 * time.Millisecond)},
+	}
+	for _, tt := range tests {
+		if got := assistantAudioSendDeadline(pacedStart, tt.packetIndex, frameDuration); !got.Equal(tt.want) {
+			t.Fatalf("packet %d deadline = %v, want %v", tt.packetIndex, got, tt.want)
+		}
+	}
+}

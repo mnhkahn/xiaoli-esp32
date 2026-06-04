@@ -16,6 +16,13 @@ import (
 	"time"
 )
 
+const (
+	directDeviceAudioSampleRate      = 16000
+	directDeviceAudioChannels        = 1
+	directDeviceAudioFrameDurationMS = 60
+	assistantAudioPrebufferPacketNum = 5
+)
+
 type DeviceController interface {
 	Devices(ctx context.Context) ([]Device, error)
 	Tools(ctx context.Context, deviceID string) (ToolListResponse, error)
@@ -293,9 +300,9 @@ func (h *DeviceHub) handleText(session *deviceSession, body []byte) {
 			"session_id": session.sessionID,
 			"audio_params": map[string]any{
 				"format":         "opus",
-				"sample_rate":    16000,
-				"channels":       1,
-				"frame_duration": 60,
+				"sample_rate":    directDeviceAudioSampleRate,
+				"channels":       directDeviceAudioChannels,
+				"frame_duration": directDeviceAudioFrameDurationMS,
 			},
 		})
 		go h.bootstrapMCP(session)
@@ -485,31 +492,58 @@ func (h *DeviceHub) playAssistantText(ctx context.Context, session *deviceSessio
 		frameDuration = 20 * time.Millisecond
 	}
 
-	// Re-encode at 60ms to match device decoder's frame_duration
-	reencoded, targetFrameDuration, err := reencodeOpusFrames(packets, 16000, frameDuration, 60)
+	// Re-encode at 60ms to match device decoder's frame_duration.
+	reencoded, targetFrameDuration, err := reencodeOpusFrames(packets, directDeviceAudioSampleRate, frameDuration, directDeviceAudioFrameDurationMS)
 	if err != nil || len(reencoded) == 0 {
 		log.Printf("tts reencode failed for %s: %v, falling back to raw packets", session.deviceID, err)
 		reencoded = packets
 		targetFrameDuration = frameDuration
 	}
 
-	log.Printf("tts stream start for %s: packets=%d reencoded=%d srcFrameDur=%s targetFrameDur=%s", session.deviceID, len(packets), len(reencoded), frameDuration, targetFrameDuration)
+	log.Printf("tts stream start for %s: packets=%d reencoded=%d srcFrameDur=%s targetFrameDur=%s prebuffer=%d", session.deviceID, len(packets), len(reencoded), frameDuration, targetFrameDuration, assistantAudioPrebufferPacketNum)
 
-	ticker := time.NewTicker(targetFrameDuration)
-	defer ticker.Stop()
+	var pacedStart time.Time
 	for i, pkt := range reencoded {
+		if i == assistantAudioPrebufferPacketNum {
+			pacedStart = time.Now()
+		} else if deadline := assistantAudioSendDeadline(pacedStart, i, targetFrameDuration); !deadline.IsZero() {
+			if err := waitUntil(ctx, deadline); err != nil {
+				return err
+			}
+		}
 		if err := session.writeFrame(wsOpcodeBinary, pkt); err != nil {
 			log.Printf("tts stream send failed for %s at packet %d/%d: %v", session.deviceID, i+1, len(reencoded), err)
 			return err
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
 	}
 	log.Printf("tts stream done for %s: sent %d packets", session.deviceID, len(reencoded))
 	return nil
+}
+
+func assistantAudioSendDeadline(pacedStart time.Time, packetIndex int, frameDuration time.Duration) time.Time {
+	if pacedStart.IsZero() || frameDuration <= 0 {
+		return time.Time{}
+	}
+	pacedPacketIndex := packetIndex - assistantAudioPrebufferPacketNum
+	if pacedPacketIndex <= 0 {
+		return time.Time{}
+	}
+	return pacedStart.Add(time.Duration(pacedPacketIndex) * frameDuration)
+}
+
+func waitUntil(ctx context.Context, deadline time.Time) error {
+	delay := time.Until(deadline)
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (h *DeviceHub) bootstrapMCP(session *deviceSession) {
@@ -966,4 +1000,3 @@ func base64DecodedSize(value string) int {
 	}
 	return len(value) * 3 / 4
 }
-
