@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -50,6 +51,53 @@ func TestLangSmithReferencesRemovedFromServerRuntime(t *testing.T) {
 	if _, err := os.Stat("../../pkg/langsmith"); !os.IsNotExist(err) {
 		t.Fatalf("server/pkg/langsmith should be removed, stat err=%v", err)
 	}
+}
+
+func TestDockerfileCopySourcesExistInBuildContext(t *testing.T) {
+	dockerfile := "../../Dockerfile"
+	data, err := os.ReadFile(dockerfile)
+	if err != nil {
+		t.Fatalf("read Dockerfile: %v", err)
+	}
+	for lineNumber, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || strings.ToUpper(fields[0]) != "COPY" {
+			continue
+		}
+		if strings.HasPrefix(fields[1], "--from=") {
+			continue
+		}
+		for _, source := range fields[1 : len(fields)-1] {
+			source = strings.Trim(source, `"'`)
+			path := filepath.Clean(filepath.Join("../..", source))
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("Dockerfile line %d copies missing source %q: %v", lineNumber+1, source, err)
+			}
+			if info.IsDir() && !directoryHasFile(t, path) {
+				t.Fatalf("Dockerfile line %d copies empty directory %q", lineNumber+1, source)
+			}
+		}
+	}
+}
+
+func directoryHasFile(t *testing.T, root string) bool {
+	t.Helper()
+	hasFile := false
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			hasFile = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", root, err)
+	}
+	return hasFile
 }
 
 func TestSignedSessionRoundTripRejectsTampering(t *testing.T) {
