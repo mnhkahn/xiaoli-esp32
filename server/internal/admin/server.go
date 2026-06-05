@@ -52,6 +52,7 @@ type AdminServer struct {
 	audioStore  *audioStore
 	deviceHub   *DeviceHub
 	memory      memoryReader
+	agent       *EinoAgent
 	imagesMu    sync.Mutex
 	images      map[string]imageRecord
 	imagesByDev map[string][]string
@@ -103,6 +104,7 @@ func NewServer(cfg Config) *AdminServer {
 		bridge:      NewBridgeClient(cfg.BridgeBaseURL, client),
 		stream:      stream,
 		audioStore:  audioStore,
+		agent:       agent,
 		deviceHub:   deviceHub,
 		memory:      memory,
 		images:      map[string]imageRecord{},
@@ -1493,7 +1495,7 @@ func memoryHTML(user map[string]any) string {
     .list { display: grid; gap: 8px; max-height: 72vh; overflow: auto; padding-right: 4px; }
     .item { text-align: left; display: grid; gap: 4px; border-radius: 6px; }
     .item.active { border-color: #0f766e; box-shadow: 0 0 0 1px #0f766e inset; }
-    .message { width: 100%; border: 1px solid #d9dee7; border-left-width: 4px; border-radius: 6px; padding: 10px 12px; display: block; text-align: left; overflow: hidden; background: #fff; }
+    .message { width: 100%; border: 1px solid #d9dee7; border-left-width: 4px; border-radius: 6px; padding: 10px 12px; display: block; text-align: left; overflow: hidden; color: #17202a; background: #fff; -webkit-appearance: none; appearance: none; }
     .message.user { border-left-color: #2563eb; background: #eff6ff; }
     .message.assistant { border-left-color: #0f766e; background: #ecfdf5; }
     .message.tool { border-left-color: #9333ea; background: #faf5ff; }

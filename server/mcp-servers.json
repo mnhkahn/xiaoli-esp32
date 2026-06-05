@@ -1,0 +1,8 @@
+{
+  "mcp_servers": [
+    {
+      "name": "CYEAM",
+      "url": "https://cyeam-wiki-mcp-production.up.railway.app/mcp"
+    }
+  ]
+}

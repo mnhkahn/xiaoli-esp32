@@ -40,6 +40,8 @@ RUN ldconfig
 
 COPY --from=go-build /out/xiaoli-admin /usr/local/bin/xiaoli-admin
 
+WORKDIR /data
+
 ENV XIAOLI_ADMIN_HOST=0.0.0.0
 ENV XIAOLI_ADMIN_PORT=8080
 ENV XIAOLI_DIRECT_DEVICE_SERVER=true

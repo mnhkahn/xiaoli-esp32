@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"encoding/json"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -44,6 +46,8 @@ type Config struct {
 	GoTTSVoice              string
 	GoTTSResponseFormat     string
 	GoTTSTimeout            time.Duration
+	ExternalMCPURLs         []string
+	MCPConfigPath           string
 	StudyMonitorEnabled     bool
 	StudyMonitorTimezone    string
 	StudyMonitorStartHour   int
@@ -105,6 +109,8 @@ func LoadConfig() Config {
 		GoTTSVoice:              env("XIAOLI_GO_TTS_VOICE", env("SILICONFLOW_TTS_VOICE", "FunAudioLLM/CosyVoice2-0.5B:anna")),
 		GoTTSResponseFormat:     env("XIAOLI_GO_TTS_RESPONSE_FORMAT", "opus"),
 		GoTTSTimeout:            time.Duration(envInt("XIAOLI_GO_TTS_TIMEOUT_SECONDS", 30)) * time.Second,
+		MCPConfigPath:           env("MCP_SERVERS_CONFIG", "mcp-servers.json"),
+		ExternalMCPURLs:         loadMCPConfigFile(env("MCP_SERVERS_CONFIG", "mcp-servers.json")),
 		StudyMonitorEnabled:     envBool("STUDY_MONITOR_ENABLED", false),
 		StudyMonitorTimezone:    env("STUDY_MONITOR_TIMEZONE", "Asia/Shanghai"),
 		StudyMonitorStartHour:   envInt("STUDY_MONITOR_START_HOUR", 17),
@@ -195,4 +201,30 @@ func csv(value string) []string {
 		}
 	}
 	return items
+}
+
+type mcpServerConfig struct {
+	MCPServers []struct {
+		Name string `json:"name"`
+		URL  string `json:"url"`
+	} `json:"mcp_servers"`
+}
+
+func loadMCPConfigFile(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var cfg mcpServerConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		log.Printf("mcp config: skip %s (parse error: %v)", path, err)
+		return nil
+	}
+	var urls []string
+	for _, s := range cfg.MCPServers {
+		if s.URL != "" {
+			urls = append(urls, s.URL)
+		}
+	}
+	return urls
 }

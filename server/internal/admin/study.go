@@ -151,10 +151,15 @@ func (s *AdminServer) runMorningGreetingOnce(ctx context.Context, checkedAt time
 		log.Printf("morning greeting skipped at %s: no online device", checkedAt.Format(time.RFC3339))
 		return nil
 	}
-	text := strings.TrimSpace(s.cfg.MorningGreetingText)
+
+	text := s.dailyEncouragement(ctx)
+	if text == "" {
+		text = strings.TrimSpace(s.cfg.MorningGreetingText)
+	}
 	if text == "" {
 		text = "早上好。"
 	}
+
 	deviceID := devices[0].DeviceID
 	_, err = controller.Speak(ctx, deviceID, text)
 	if err != nil {
@@ -162,6 +167,85 @@ func (s *AdminServer) runMorningGreetingOnce(ctx context.Context, checkedAt time
 	}
 	log.Printf("morning greeting played for %s at %s: %q", deviceID, checkedAt.Format(time.RFC3339), text)
 	return nil
+}
+
+func (s *AdminServer) dailyEncouragement(ctx context.Context) string {
+	if s.agent == nil {
+		return ""
+	}
+
+	// Fetch the skill prompt from the MCP server
+	promptText := s.fetchMCPPrompt(ctx, "daily-encouragement")
+	if promptText == "" {
+		return ""
+	}
+
+	// Let the LLM generate the greeting — it has all external MCP tools available
+	// and can decide whether to call curl for weather, holiday info, etc.
+	userMsg := fmt.Sprintf(
+		"今天的日期是 %s。请根据上面的规则生成今日鼓励，只返回一句话。",
+		s.cfg.now().Format("2006年1月2日 周一"),
+	)
+	greeting, err := s.agent.Generate(ctx, promptText, userMsg)
+	if err != nil {
+		log.Printf("daily encouragement: generate error: %v", err)
+		return ""
+	}
+	return greeting
+}
+
+func (s *AdminServer) fetchMCPPrompt(ctx context.Context, promptName string) string {
+	urls := s.cfg.ExternalMCPURLs
+	if len(urls) == 0 {
+		return ""
+	}
+
+	initBody := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"xiaoli-server","version":"1.0"}}}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, urls[0], strings.NewReader(initBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	sessionID := resp.Header.Get("Mcp-Session-Id")
+	resp.Body.Close()
+	if sessionID == "" {
+		return ""
+	}
+
+	getBody := fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"prompts/get","params":{"name":"%s"}}`, promptName)
+	req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, urls[0], strings.NewReader(getBody))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Accept", "application/json, text/event-stream")
+	req2.Header.Set("Mcp-Session-Id", sessionID)
+	resp2, err := s.httpClient.Do(req2)
+	if err != nil {
+		return ""
+	}
+	defer resp2.Body.Close()
+	raw, _ := io.ReadAll(resp2.Body)
+	bodyStr := string(raw)
+	if idx := strings.Index(bodyStr, "data: "); idx >= 0 {
+		bodyStr = bodyStr[idx+6:]
+	}
+
+	var result struct {
+		Result *struct {
+			Messages []struct {
+				Content struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"messages"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(bodyStr), &result); err != nil {
+		return ""
+	}
+	if result.Result == nil || len(result.Result.Messages) == 0 {
+		return ""
+	}
+	return result.Result.Messages[0].Content.Text
 }
 
 func (s *AdminServer) runStudyMonitorOnce(ctx context.Context, checkedAt time.Time) error {
