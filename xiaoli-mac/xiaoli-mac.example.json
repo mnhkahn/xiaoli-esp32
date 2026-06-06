@@ -1,0 +1,17 @@
+{
+  "server": "wss://xiaoli-server.fly.dev",
+  "token": "",
+  "device_id": "",
+  "auth": "",
+  "wake_word": {
+    "engine": "energy",
+    "keyword": "",
+    "access_key": ""
+  },
+  "audio": {
+    "input_device": "",
+    "output_device": "",
+    "sample_rate": 16000,
+    "frame_duration_ms": 60
+  }
+}

@@ -23,3 +23,6 @@ xiaozhi-esp32/managed_components/
 xiaozhi-esp32/releases/
 xiaozhi-esp32/sdkconfig.old
 xiaozhi-esp32/main/boards/bread-compact-wifi-s3cam/assets.bin
+
+# Mac client config (contains SERVER_AUTH_KEY, never commit)
+xiaoli-mac/xiaoli-mac.json
