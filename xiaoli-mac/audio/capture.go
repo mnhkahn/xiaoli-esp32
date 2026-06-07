@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"runtime/debug"
 
 	"github.com/gordonklaus/portaudio"
 )
@@ -55,6 +56,11 @@ func OpenCapture(ctx context.Context, deviceName string) (*Capture, <-chan []int
 		return nil, nil, fmt.Errorf("portaudio start input: %w", err)
 	}
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[audio] FATAL panic in capture cleanup: %v\n%s", r, debug.Stack())
+			}
+		}()
 		<-ctx.Done()
 		_ = stream.Stop()
 		_ = stream.Close()

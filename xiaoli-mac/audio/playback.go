@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"sync/atomic"
 
 	"github.com/gordonklaus/portaudio"
@@ -101,6 +102,11 @@ func OpenPlayback(ctx context.Context, deviceName string) (*Playback, chan []int
 	atomic.AddInt64(&activePlaybacks, 1)
 	pb := &Playback{stream: stream, in: in}
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[audio] FATAL panic in playback cleanup: %v\n%s", r, debug.Stack())
+			}
+		}()
 		<-ctx.Done()
 		_ = stream.Stop()
 		// close(in) defensively unblocks any in-flight callback

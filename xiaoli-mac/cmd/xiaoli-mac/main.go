@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -20,6 +21,17 @@ import (
 )
 
 func main() {
+	// Top-level panic guard: a panic in the main goroutine (or any
+	// goroutine that bubbles up here) would otherwise kill the process
+	// without a useful trace. Log the full stack and exit non-zero so
+	// the operator can see exactly where the program went wrong.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("FATAL: panic in main: %v\n%s", r, debug.Stack())
+			os.Exit(1)
+		}
+	}()
+
 	cfgPath := flag.String("config", envOr("XIAOLI_MAC_CONFIG", "xiaoli-mac.json"),
 		"path to the device config JSON file")
 	flag.Parse()

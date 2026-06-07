@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"runtime/debug"
 	"sync"
 
 	"xiaoli/mac/assets"
@@ -24,6 +25,23 @@ import (
 	"xiaoli/mac/state"
 	"xiaoli/mac/wakeword"
 )
+
+// goSafe runs fn in a new goroutine with panic recovery that logs
+// the full stack trace. Use this for every long-lived goroutine
+// spawned in the app so a panic in a network/audio/wakeword goroutine
+// doesn't silently kill the process (or worse, kill it without any
+// breadcrumb). name is the subsystem label used in the log line,
+// e.g. "network", "audio-encode", "wakeword".
+func goSafe(name string, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[%s] FATAL panic: %v\n%s", name, r, debug.Stack())
+			}
+		}()
+		fn()
+	}()
+}
 
 // hardwareUUID is defined in uuid_darwin.go.
 
@@ -140,11 +158,11 @@ func (a *App) Run(ctx context.Context) error {
 	a.startAudio(ctx)
 
 	// Start the WebSocket client. It reconnects automatically.
-	go a.runNetwork(ctx)
+	goSafe("network", func() { a.runNetwork(ctx) })
 
 	// Drain the event queue on a goroutine; exit when the Fyne
 	// loop returns (window closed) or ctx is cancelled.
-	go func() {
+	goSafe("events", func() {
 		for {
 			select {
 			case <-ctx.Done():
@@ -153,7 +171,7 @@ func (a *App) Run(ctx context.Context) error {
 				a.safeRun(fn)
 			}
 		}
-	}()
+	})
 
 	// fyneApp.Run() blocks until the window is closed.
 	a.Display.Run()
@@ -185,20 +203,22 @@ func (a *App) startAudio(ctx context.Context) {
 
 	// The encode loop drains pcmIn and forwards encoded frames to
 	// the WebSocket client.
-	go pipe.EncodeLoop(ctx, pcmIn, func(opus []byte) {
-		if err := a.Client.SendAudio(opus); err != nil {
-			log.Printf("[audio] send: %v", err)
-		}
+	goSafe("audio-encode", func() {
+		pipe.EncodeLoop(ctx, pcmIn, func(opus []byte) {
+			if err := a.Client.SendAudio(opus); err != nil {
+				log.Printf("[audio] send: %v", err)
+			}
+		})
 	})
 
 	// Wake word detector (if configured). It reads the same mic
 	// stream and triggers a state transition to Listening.
 	if det := wakeword.Engine(a.Cfg.WakeWord.Engine, a.Cfg.WakeWord.Keyword, a.Cfg.WakeWord.AccessKey); det != nil {
-		go func() {
+		goSafe("wakeword", func() {
 			if err := det.Run(ctx, pcmIn, a.onWakeWord); err != nil {
 				log.Printf("[wakeword] detector exited: %v", err)
 			}
-		}()
+		})
 	}
 }
 
@@ -270,11 +290,11 @@ func (a *App) onTTSStart() {
 		return
 	}
 
-	go a.audio.DecodeLoop(ctx, src, pcmOut)
+	goSafe("audio-decode", func() { a.audio.DecodeLoop(ctx, src, pcmOut) })
 	// Forward decoded PCM frames to the speaker. The select on
 	// ctx.Done() lets this goroutine exit when the playback is
 	// stopped, since pcmOut is never closed by the decode loop.
-	go func() {
+	goSafe("audio-forwarder", func() {
 		for {
 			select {
 			case <-ctx.Done():
@@ -286,7 +306,7 @@ func (a *App) onTTSStart() {
 				playback.Write(frame)
 			}
 		}
-	}()
+	})
 }
 
 // onTTSStop closes the current playback source and cancels the
@@ -403,7 +423,7 @@ var _ = tools.RegisterDeviceTools
 func (a *App) safeRun(fn func()) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("[app] panic in event: %v", r)
+			log.Printf("[app] FATAL panic in event: %v\n%s", r, debug.Stack())
 		}
 	}()
 	fn()
