@@ -147,8 +147,9 @@ func (s *AdminServer) runMorningGreetingOnce(ctx context.Context, checkedAt time
 	if err != nil {
 		return err
 	}
-	if len(devices) == 0 {
-		log.Printf("morning greeting skipped at %s: no online device", checkedAt.Format(time.RFC3339))
+	deviceID := pickOnlineDevice(devices, s.cfg.MorningGreetingDeviceIDs)
+	if deviceID == "" {
+		log.Printf("morning greeting skipped at %s: no eligible device (allowlist=%v, online=%d)", checkedAt.Format(time.RFC3339), s.cfg.MorningGreetingDeviceIDs, len(devices))
 		return nil
 	}
 
@@ -160,7 +161,6 @@ func (s *AdminServer) runMorningGreetingOnce(ctx context.Context, checkedAt time
 		text = "早上好。"
 	}
 
-	deviceID := devices[0].DeviceID
 	_, err = controller.Speak(ctx, deviceID, text)
 	if err != nil {
 		return err
@@ -248,16 +248,38 @@ func (s *AdminServer) fetchMCPPrompt(ctx context.Context, promptName string) str
 	return result.Result.Messages[0].Content.Text
 }
 
+// pickOnlineDevice returns the first online device whose ID is in
+// allowlist. If allowlist is empty, the first online device is
+// returned (backward-compatible behaviour). Returns "" if no device
+// is eligible, which signals the caller to skip the run.
+func pickOnlineDevice(devices []Device, allowlist []string) string {
+	if len(allowlist) == 0 {
+		if len(devices) == 0 {
+			return ""
+		}
+		return devices[0].DeviceID
+	}
+	for _, d := range devices {
+		for _, allowed := range allowlist {
+			if d.DeviceID == allowed {
+				return d.DeviceID
+			}
+		}
+	}
+	return ""
+}
+
 func (s *AdminServer) runStudyMonitorOnce(ctx context.Context, checkedAt time.Time) error {
 	controller := s.deviceController()
 	devices, err := controller.Devices(ctx)
 	if err != nil {
 		return err
 	}
-	if len(devices) == 0 {
+	deviceID := pickOnlineDevice(devices, s.cfg.StudyMonitorDeviceIDs)
+	if deviceID == "" {
+		log.Printf("study monitor skipped at %s: no eligible device (allowlist=%v, online=%d)", checkedAt.Format(time.RFC3339), s.cfg.StudyMonitorDeviceIDs, len(devices))
 		return nil
 	}
-	deviceID := devices[0].DeviceID
 	started := s.cfg.now()
 	result, err := controller.Call(ctx, BridgeCallRequest{
 		DeviceID:  deviceID,

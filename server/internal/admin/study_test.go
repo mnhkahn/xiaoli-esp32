@@ -5,6 +5,42 @@ import (
 	"time"
 )
 
+func TestPickOnlineDevice(t *testing.T) {
+	devices := []Device{
+		{DeviceID: "device-1"},
+		{DeviceID: "device-2"},
+		{DeviceID: "device-3"},
+	}
+
+	cases := []struct {
+		name      string
+		devices   []Device
+		allowlist []string
+		want      string
+	}{
+		{"empty allowlist returns first device", devices, nil, "device-1"},
+		{"empty allowlist with empty device list", nil, nil, ""},
+		{"allowlist matches first device", devices, []string{"device-1"}, "device-1"},
+		{"allowlist matches middle device", devices, []string{"device-2"}, "device-2"},
+		{"allowlist matches last device", devices, []string{"device-3"}, "device-3"},
+		{"allowlist with no match returns empty", devices, []string{"device-99"}, ""},
+		{"allowlist with multiple entries picks first online device that matches", devices, []string{"device-99", "device-2", "device-1"}, "device-1"},
+		{"Mac hardwareUUID excluded when ESP32 MAC only", []Device{
+			{DeviceID: "D3AEA19E-5592-54A4-A993-B4D8135AEA29"},
+			{DeviceID: "28:84:85:8c:ef:f4"},
+		}, []string{"28:84:85:8c:ef:f4"}, "28:84:85:8c:ef:f4"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := pickOnlineDevice(tc.devices, tc.allowlist)
+			if got != tc.want {
+				t.Fatalf("pickOnlineDevice(%v, %v) = %q, want %q", tc.devices, tc.allowlist, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseStudyDecisionFromJSON(t *testing.T) {
 	srv := NewServer(testConfig())
 	value := map[string]any{

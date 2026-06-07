@@ -489,6 +489,7 @@ func (s *AdminServer) schedules() []map[string]any {
 			"interval_seconds": int(interval.Seconds()),
 			"camera_tool":      s.cfg.StudyMonitorCameraTool,
 			"reminder_text":    s.cfg.StudyMonitorReminder,
+			"device_ids":       s.cfg.StudyMonitorDeviceIDs,
 		},
 		{
 			"id":          "morning_greeting",
@@ -498,6 +499,7 @@ func (s *AdminServer) schedules() []map[string]any {
 			"timezone":    s.cfg.MorningGreetingTimezone,
 			"time":        fmt.Sprintf("%02d:%02d", clampInt(s.cfg.MorningGreetingHour, 0, 23, 8), clampInt(s.cfg.MorningGreetingMinute, 0, 59, 0)),
 			"text":        firstText(strings.TrimSpace(s.cfg.MorningGreetingText), "早上好。"),
+			"device_ids":  s.cfg.MorningGreetingDeviceIDs,
 		},
 	}
 }
