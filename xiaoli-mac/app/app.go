@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"os"
 	"sync"
 
 	"xiaoli/mac/assets"
@@ -46,6 +47,27 @@ type App struct {
 	ttsMu      sync.Mutex
 	ttsSource  *audioChan
 	ttsPlaying bool
+
+	// ttsCancel cancels the context passed to audio.OpenPlayback
+	// for the current TTS turn. Cancelling it triggers the
+	// playback's cleanup goroutine to Stop/Close the PortAudio
+	// stream and decrement audio.ActivePlaybacks(). Without this
+	// (i.e. passing context.Background() as we used to), the
+	// stream leaks across TTS turns: every tts.start opens a new
+	// stream on top of the still-active previous one, and the
+	// speaker mixes audio from N ghost streams of silence, which
+	// is exactly the "garbled TTS" symptom the user reported.
+	ttsCancel context.CancelFunc
+
+	// ttsRecordFile is an optional tee that mirrors every inbound
+	// TTS OPUS frame to disk as it arrives, for the entire TTS
+	// playback window (tts.start … tts.stop). nil means disabled,
+	// which is the production default — set only via SetTTSRecorder.
+	// This is purely a recording path: it has no effect on playback,
+	// state, or wake-word interrupt behaviour. Used for audio-path
+	// diffing against a mock server.
+	ttsRecMu      sync.Mutex
+	ttsRecordFile *os.File
 
 	// capture is the live mic; nil if PortAudio is unavailable.
 	capture *audio.Capture
@@ -212,7 +234,10 @@ func (a *App) onTTSStart() {
 	}
 	a.ttsMu.Lock()
 	if a.ttsPlaying {
-		// Already playing: stop the previous session first.
+		// Already playing: stop the previous session first. This
+		// also cancels the previous playback's context, so the
+		// previous PortAudio stream is closed before we open a
+		// new one.
 		a.ttsMu.Unlock()
 		a.onTTSStop()
 		a.ttsMu.Lock()
@@ -220,40 +245,86 @@ func (a *App) onTTSStart() {
 	src := newAudioChan()
 	a.ttsSource = src
 	a.ttsPlaying = true
+
+	// Build a cancellable context for this turn. onTTSStop calls
+	// the cancel func, which triggers audio.OpenPlayback's
+	// cleanup goroutine to Stop/Close the underlying PortAudio
+	// stream. Without cancellation, the stream would leak across
+	// TTS turns and the speaker would mix audio from multiple
+	// "ghost" streams.
+	ctx, cancel := context.WithCancel(context.Background())
+	a.ttsCancel = cancel
 	a.ttsMu.Unlock()
 
-	// Open a fresh speaker stream per TTS turn.
-	playback, pcmOut, err := audio.OpenPlayback(context.Background(), a.Cfg.Audio.OutputDevice)
+	playback, pcmOut, err := audio.OpenPlayback(ctx, a.Cfg.Audio.OutputDevice)
 	if err != nil {
 		log.Printf("[audio] playback open failed: %v", err)
+		// Roll back the source we just installed; otherwise
+		// subsequent tts.start events would push frames into a
+		// dead channel.
+		a.ttsMu.Lock()
+		a.ttsSource = nil
+		a.ttsCancel = nil
+		a.ttsPlaying = false
+		a.ttsMu.Unlock()
 		return
 	}
 
-	go a.audio.DecodeLoop(context.Background(), src, pcmOut)
+	go a.audio.DecodeLoop(ctx, src, pcmOut)
+	// Forward decoded PCM frames to the speaker. The select on
+	// ctx.Done() lets this goroutine exit when the playback is
+	// stopped, since pcmOut is never closed by the decode loop.
 	go func() {
-		for frame := range pcmOut {
-			playback.Write(frame)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case frame, ok := <-pcmOut:
+				if !ok {
+					return
+				}
+				playback.Write(frame)
+			}
 		}
 	}()
 }
 
-// onTTSStop closes the current playback source, which terminates
-// the decode loop. The speaker device is closed when the program
-// exits.
+// onTTSStop closes the current playback source and cancels the
+// playback context. Cancelling the context causes the PortAudio
+// stream to be closed by the cleanup goroutine started inside
+// audio.OpenPlayback.
 func (a *App) onTTSStop() {
 	a.ttsMu.Lock()
 	src := a.ttsSource
+	cancel := a.ttsCancel
 	a.ttsSource = nil
+	a.ttsCancel = nil
 	a.ttsPlaying = false
 	a.ttsMu.Unlock()
 	if src != nil {
 		src.Close()
+	}
+	if cancel != nil {
+		cancel()
 	}
 }
 
 // FeedTTSAudio is invoked by the network layer on every binary
 // frame received between tts.start and tts.stop.
 func (a *App) FeedTTSAudio(opus []byte) {
+	// Optional tee for audio-path debugging. Pure passthrough when
+	// disabled (ttsRecordFile == nil), so production behaviour is
+	// unchanged. Records continuously for the whole TTS window
+	// ("边播边录" = record-while-playing); unrelated to barge-in.
+	a.ttsRecMu.Lock()
+	rec := a.ttsRecordFile
+	a.ttsRecMu.Unlock()
+	if rec != nil {
+		if _, err := rec.Write(opus); err != nil {
+			log.Printf("[record-tts] write: %v", err)
+		}
+	}
+
 	a.ttsMu.Lock()
 	src := a.ttsSource
 	a.ttsMu.Unlock()
@@ -261,6 +332,33 @@ func (a *App) FeedTTSAudio(opus []byte) {
 		return
 	}
 	src.Push(opus)
+}
+
+// SetTTSRecorder opens path for appending raw TTS OPUS frames
+// received from the server. Frames are concatenated in arrival
+// order for the entire tts.start…tts.stop window; no header is
+// written, so the result is a stream of self-contained OPUS
+// packets that opusdec(1) can play back frame-by-frame. Pass ""
+// to disable.
+//
+// Calling with a new path closes the previous file. Safe to call
+// before Run; the file is held until the process exits.
+func (a *App) SetTTSRecorder(path string) error {
+	a.ttsRecMu.Lock()
+	defer a.ttsRecMu.Unlock()
+	if a.ttsRecordFile != nil {
+		_ = a.ttsRecordFile.Close()
+		a.ttsRecordFile = nil
+	}
+	if path == "" {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	a.ttsRecordFile = f
+	return nil
 }
 
 // onMCP hands an inbound MCP payload to the local MCP server. The

@@ -26,9 +26,14 @@ func buildOggOpus(frames [][]byte, inputSampleRate int, channels int, frameDurat
 	if frameDurationMS <= 0 {
 		frameDurationMS = 60
 	}
+	// OpusHead's "Input Sample Rate" field is informational; the actual
+	// bandwidth is carried by each packet's TOC byte. Always advertise
+	// 48000 (Opus's internal rate) so strict decoders (macOS AudioToolbox)
+	// accept the file.
+	opusHeadSampleRate := 48000
 	var out bytes.Buffer
 	seq := uint32(0)
-	writeOggPage(&out, 0x02, 0, oggOpusSerial, seq, opusHeadPacket(inputSampleRate, channels))
+	writeOggPage(&out, 0x02, 0, oggOpusSerial, seq, opusHeadPacket(opusHeadSampleRate, channels))
 	seq++
 	writeOggPage(&out, 0x00, 0, oggOpusSerial, seq, opusTagsPacket())
 	seq++
@@ -57,7 +62,10 @@ func opusHeadPacket(inputSampleRate int, channels int) []byte {
 	copy(packet, []byte("OpusHead"))
 	packet[8] = 1
 	packet[9] = byte(channels)
-	binary.LittleEndian.PutUint16(packet[10:12], 0)
+	// pre-skip = number of samples (at 48kHz) the decoder should skip at the
+	// start. libopus default is 312 (6.5ms) — opus-go uses the same.
+	// Setting 0 confuses strict decoders like macOS AudioToolbox.
+	binary.LittleEndian.PutUint16(packet[10:12], 312)
 	binary.LittleEndian.PutUint32(packet[12:16], uint32(inputSampleRate))
 	binary.LittleEndian.PutUint16(packet[16:18], 0)
 	packet[18] = 0

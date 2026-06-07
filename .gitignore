@@ -26,3 +26,20 @@ xiaozhi-esp32/main/boards/bread-compact-wifi-s3cam/assets.bin
 
 # Mac client config (contains SERVER_AUTH_KEY, never commit)
 xiaoli-mac/xiaoli-mac.json
+
+# Audio files (recordings, TTS dumps, test fixtures, generated audio)
+# Tracked firmware assets under xiaozhi-esp32/main/assets/** stay tracked
+# (gitignore only blocks new additions, never untracks existing files).
+*.wav
+*.opus
+*.ogg
+*.mp3
+*.m4a
+*.aac
+*.flac
+*.aiff
+*.aif
+*.webm
+*.caf
+*.au
+*.oga

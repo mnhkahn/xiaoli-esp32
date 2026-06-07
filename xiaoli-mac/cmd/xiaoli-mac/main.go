@@ -10,7 +10,10 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
+	"time"
 
 	"xiaoli/mac/app"
 	"xiaoli/mac/config"
@@ -28,6 +31,13 @@ func main() {
 	log.Printf("server=%s wake=%s", cfg.Server, cfg.WakeWord.Engine)
 
 	a := app.New(cfg)
+	if cfg.RecordTTS != "" {
+		path := expandRecordPath(cfg.RecordTTS)
+		if err := a.SetTTSRecorder(path); err != nil {
+			log.Fatalf("record-tts: %v", err)
+		}
+		log.Printf("record-tts=%s (raw OPUS frames, append mode)", path)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(),
 		syscall.SIGINT, syscall.SIGTERM)
@@ -44,4 +54,19 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// expandRecordPath substitutes the literal token "{ts}" in a
+// configured record-tts path with a session-start timestamp, so
+// every run lands in a fresh file. Paths without the token are
+// returned unchanged (and will be appended-to on next run, which
+// is the caller's choice).
+func expandRecordPath(p string) string {
+	if !strings.Contains(p, "{ts}") {
+		return p
+	}
+	ts := time.Now().Format("20060102-150405")
+	out := strings.ReplaceAll(p, "{ts}", ts)
+	_ = os.MkdirAll(filepath.Dir(out), 0o755)
+	return out
 }

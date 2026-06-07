@@ -30,6 +30,13 @@ type Config struct {
 
 	// Audio configures mic/speaker.
 	Audio AudioConfig `json:"audio"`
+
+	// RecordTTS, if non-empty, is the path to a file that will
+	// receive a raw concatenation of every OPUS frame the server
+	// sends between tts.start and tts.stop. The literal token
+	// "{ts}" is replaced with a session-start timestamp so each
+	// run gets a unique file. Empty disables recording.
+	RecordTTS string `json:"record_tts,omitempty"`
 }
 
 type WakeWordConfig struct {
