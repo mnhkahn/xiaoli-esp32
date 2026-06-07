@@ -1,4 +1,0 @@
-2026/06/06 23:51:53 [mock] listening on ws://:8080/xiaozhi/v1/, output -> ./recordings
-2026/06/06 23:51:57 [mock] connected device=mac-local-test-001
-2026/06/06 23:51:57 [mock] hello sent
-2026/06/06 23:56:34 [mock] shutting down

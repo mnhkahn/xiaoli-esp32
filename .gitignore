@@ -43,3 +43,8 @@ xiaoli-mac/xiaoli-mac.json
 *.caf
 *.au
 *.oga
+
+# Logs, pid files, and stdout captures from background processes
+*.log
+*.pid
+nohup.out
