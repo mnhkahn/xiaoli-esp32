@@ -254,10 +254,13 @@ func (a *App) onTTSStart() {
 	}
 	a.ttsMu.Lock()
 	if a.ttsPlaying {
-		// Already playing: stop the previous session first. This
-		// also cancels the previous playback's context, so the
-		// previous PortAudio stream is closed before we open a
-		// new one.
+		// Already playing: close the previous source so the old
+		// decode loop drains and the old forwarder exits. We do
+		// NOT cancel the old context — cancellation would fire
+		// the watchdog in audio.OpenPlayback and Abort the
+		// stream, cutting off the in-flight tail. The old
+		// forwarder's `defer playback.Drain()` will close the
+		// old stream after the last real frame plays out.
 		a.ttsMu.Unlock()
 		a.onTTSStop()
 		a.ttsMu.Lock()
@@ -266,12 +269,10 @@ func (a *App) onTTSStart() {
 	a.ttsSource = src
 	a.ttsPlaying = true
 
-	// Build a cancellable context for this turn. onTTSStop calls
-	// the cancel func, which triggers audio.OpenPlayback's
-	// cleanup goroutine to Stop/Close the underlying PortAudio
-	// stream. Without cancellation, the stream would leak across
-	// TTS turns and the speaker would mix audio from multiple
-	// "ghost" streams.
+	// Context is only used for the force-abort watchdog inside
+	// audio.OpenPlayback (app shutdown, parent cancel). The
+	// normal tts.stop path goes through Playback.Drain(), not
+	// cancel — see onTTSStop below for why.
 	ctx, cancel := context.WithCancel(context.Background())
 	a.ttsCancel = cancel
 	a.ttsMu.Unlock()
@@ -291,41 +292,44 @@ func (a *App) onTTSStart() {
 	}
 
 	goSafe("audio-decode", func() { a.audio.DecodeLoop(ctx, src, pcmOut) })
-	// Forward decoded PCM frames to the speaker. The select on
-	// ctx.Done() lets this goroutine exit when the playback is
-	// stopped, since pcmOut is never closed by the decode loop.
+	// Forward decoded PCM frames to the speaker. The `for range`
+	// exits when DecodeLoop closes pcmOut (its `defer
+	// close(pcmOut)`); then `defer playback.Drain()` closes
+	// `in`, waits ~100ms for PortAudio's internal ring buffer
+	// to play out the last real samples, and closes the stream.
+	// This mirrors the ESP32 reference
+	// (xiaozhi-esp32/main/audio/audio_service.cc:652, where
+	// tts.stop flips state but does not clear
+	// audio_playback_queue_), so the user hears the full tail
+	// of each TTS turn instead of an Abort() chop.
 	goSafe("audio-forwarder", func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case frame, ok := <-pcmOut:
-				if !ok {
-					return
-				}
-				playback.Write(frame)
-			}
+		defer playback.Drain()
+		for frame := range pcmOut {
+			playback.Write(frame)
 		}
 	})
 }
 
-// onTTSStop closes the current playback source and cancels the
-// playback context. Cancelling the context causes the PortAudio
-// stream to be closed by the cleanup goroutine started inside
-// audio.OpenPlayback.
+// onTTSStop closes the current playback source. We intentionally
+// do NOT cancel the playback context here — the watchdog in
+// audio.OpenPlayback would call Playback.Abort() and discard the
+// PortAudio internal buffer, cutting the tail of the TTS off mid-
+// word. Instead we just close src: DecodeLoop drains audioChan,
+// closes pcmOut, the forwarder exits its `for range`, and
+// `defer playback.Drain()` plays the rest out smoothly.
+//
+// Cancelling the context is reserved for app shutdown (the main
+// goroutine in cmd/xiaoli-mac), where we DO want to chop
+// everything.
 func (a *App) onTTSStop() {
 	a.ttsMu.Lock()
 	src := a.ttsSource
-	cancel := a.ttsCancel
 	a.ttsSource = nil
 	a.ttsCancel = nil
 	a.ttsPlaying = false
 	a.ttsMu.Unlock()
 	if src != nil {
 		src.Close()
-	}
-	if cancel != nil {
-		cancel()
 	}
 }
 
@@ -336,11 +340,19 @@ func (a *App) FeedTTSAudio(opus []byte) {
 	// disabled (ttsRecordFile == nil), so production behaviour is
 	// unchanged. Records continuously for the whole TTS window
 	// ("边播边录" = record-while-playing); unrelated to barge-in.
+	//
+	// Format: [2-byte big-endian length][frame payload] per frame.
+	// Length prefix allows a reader to delimit individual Opus
+	// packets since the server sends CBR frames (no self-describing
+	// packet boundaries).
 	a.ttsRecMu.Lock()
 	rec := a.ttsRecordFile
 	a.ttsRecMu.Unlock()
 	if rec != nil {
-		if _, err := rec.Write(opus); err != nil {
+		hdr := []byte{byte(len(opus) >> 8), byte(len(opus))}
+		if _, err := rec.Write(hdr); err != nil {
+			log.Printf("[record-tts] write header: %v", err)
+		} else if _, err := rec.Write(opus); err != nil {
 			log.Printf("[record-tts] write: %v", err)
 		}
 	}
@@ -354,12 +366,12 @@ func (a *App) FeedTTSAudio(opus []byte) {
 	src.Push(opus)
 }
 
-// SetTTSRecorder opens path for appending raw TTS OPUS frames
-// received from the server. Frames are concatenated in arrival
-// order for the entire tts.start…tts.stop window; no header is
-// written, so the result is a stream of self-contained OPUS
-// packets that opusdec(1) can play back frame-by-frame. Pass ""
-// to disable.
+// SetTTSRecorder opens path for appending TTS OPUS frames received
+// from the server. Each frame is written as:
+//   [2-byte big-endian length][frame data]
+// The length prefix allows a reader to re-delimit individual Opus
+// packets (the server sends CBR frames without self-describing
+// boundaries). Pass "" to disable.
 //
 // Calling with a new path closes the previous file. Safe to call
 // before Run; the file is held until the process exits.

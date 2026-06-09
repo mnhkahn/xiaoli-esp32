@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"log"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -476,7 +477,7 @@ func (s *AdminServer) handleSchedules(w http.ResponseWriter, r *http.Request, us
 func (s *AdminServer) schedules() []map[string]any {
 	interval := s.cfg.StudyMonitorInterval
 	if interval == 0 {
-		interval = 5 * time.Minute
+		interval = 10 * time.Minute
 	}
 	return []map[string]any{
 		{
@@ -1727,11 +1728,14 @@ func firstNonEmpty(m map[string]any, keys ...string) string {
 func (s *AdminServer) handleVisionProxy(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		log.Printf("[vision] read body failed: %v", err)
 		http.Error(w, "read body failed", http.StatusBadRequest)
 		return
 	}
 	contentType := r.Header.Get("Content-Type")
 	deviceID := r.Header.Get("device-id")
+	log.Printf("[vision] %s from device=%s content-type=%s body=%d bytes", r.URL.Path, deviceID, contentType, len(body))
+
 	if r.URL.Path == "/mcp/vision/snapshot" {
 		s.handleVisionSnapshot(w, r, body, contentType, deviceID)
 		return
@@ -1750,16 +1754,19 @@ func (s *AdminServer) handleVisionProxy(w http.ResponseWriter, r *http.Request) 
 	targetURL := s.cfg.VisionProxyBaseURL + r.URL.RequestURI()
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, bytes.NewReader(body))
 	if err != nil {
+		log.Printf("[vision] create upstream request failed: %v", err)
 		http.Error(w, "create upstream request failed", http.StatusInternalServerError)
 		return
 	}
 	copyProxyHeaders(req.Header, r.Header)
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
+		log.Printf("[vision] upstream failed for %s: %v", targetURL, err)
 		http.Error(w, "vision upstream failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
+	log.Printf("[vision] upstream response for %s: status=%d", r.URL.Path, resp.StatusCode)
 	for key, values := range resp.Header {
 		if _, skip := hopByHopHeaders[strings.ToLower(key)]; skip {
 			continue
@@ -1778,15 +1785,18 @@ func (s *AdminServer) handleVisionSnapshot(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if deviceID == "" {
+		log.Printf("[vision] snapshot from empty device-id")
 		http.Error(w, "missing device-id", http.StatusBadRequest)
 		return
 	}
 	image, ok := s.extractVisionImage(contentType, body)
 	if !ok {
+		log.Printf("[vision] snapshot from %s: no image data", deviceID)
 		http.Error(w, "missing image snapshot", http.StatusBadRequest)
 		return
 	}
 	if len(image.Body) > 2*1024*1024 {
+		log.Printf("[vision] snapshot from %s: image too large: %d bytes", deviceID, len(image.Body))
 		http.Error(w, "image snapshot too large", http.StatusRequestEntityTooLarge)
 		return
 	}
@@ -1801,6 +1811,7 @@ func (s *AdminServer) handleVisionSnapshot(w http.ResponseWriter, r *http.Reques
 		"seq":          "0",
 		"timestamp_ms": fmt.Sprintf("%d", s.cfg.now().UnixMilli()),
 	})
+	log.Printf("[vision] snapshot from %s: stored=%s bytes=%d resolution=%s", deviceID, imageID, len(image.Body), resolution)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":           true,
 		"image_url":    imageURL,

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"xiaoli/mac/app"
+	"xiaoli/mac/audio"
 	"xiaoli/mac/config"
 )
 
@@ -31,6 +32,14 @@ func main() {
 			os.Exit(1)
 		}
 	}()
+
+	// Release PortAudio on exit. Per the upstream docs, Terminate
+	// MUST be called before exiting a program that uses PortAudio
+	// ("Failure to do so may result in serious resource leaks, such
+	// as audio devices not being available until the next reboot.").
+	// We do it once here, never from a per-stream cleanup goroutine
+	// — see audio/audio.go for the full rationale.
+	defer audio.Terminate()
 
 	cfgPath := flag.String("config", envOr("XIAOLI_MAC_CONFIG", "xiaoli-mac.json"),
 		"path to the device config JSON file")

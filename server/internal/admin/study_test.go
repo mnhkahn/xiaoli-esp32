@@ -85,7 +85,7 @@ func TestStudyMonitorSlotUsesConfiguredWindow(t *testing.T) {
 	cfg.StudyMonitorTimezone = "Asia/Shanghai"
 	cfg.StudyMonitorStartHour = 17
 	cfg.StudyMonitorEndHour = 21
-	cfg.StudyMonitorInterval = 5 * time.Minute
+	cfg.StudyMonitorInterval = 10 * time.Minute
 	srv := NewServer(cfg)
 	inWindow := time.Date(2026, 5, 24, 17, 3, 20, 0, time.FixedZone("CST", 8*3600))
 	outWindow := time.Date(2026, 5, 24, 21, 0, 0, 0, time.FixedZone("CST", 8*3600))

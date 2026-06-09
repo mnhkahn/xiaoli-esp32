@@ -20,12 +20,9 @@ type Capture struct {
 // The frames channel receives slices of length samplesPerFrame
 // (960 int16 samples = 60ms at 16kHz).
 func OpenCapture(ctx context.Context, deviceName string) (*Capture, <-chan []int16, error) {
-	if err := portaudio.Initialize(); err != nil {
-		return nil, nil, fmt.Errorf("portaudio init: %w", err)
-	}
+	Initialize()
 	dev, err := selectInputDevice(deviceName)
 	if err != nil {
-		_ = portaudio.Terminate()
 		return nil, nil, err
 	}
 	params := portaudio.LowLatencyParameters(dev, nil)
@@ -47,12 +44,10 @@ func OpenCapture(ctx context.Context, deviceName string) (*Capture, <-chan []int
 		}
 	})
 	if err != nil {
-		_ = portaudio.Terminate()
 		return nil, nil, fmt.Errorf("portaudio open input: %w", err)
 	}
 	if err := stream.Start(); err != nil {
 		_ = stream.Close()
-		_ = portaudio.Terminate()
 		return nil, nil, fmt.Errorf("portaudio start input: %w", err)
 	}
 	go func() {
@@ -64,7 +59,10 @@ func OpenCapture(ctx context.Context, deviceName string) (*Capture, <-chan []int
 		<-ctx.Done()
 		_ = stream.Stop()
 		_ = stream.Close()
-		_ = portaudio.Terminate()
+		// Intentionally NOT calling portaudio.Terminate() here:
+		// Terminate is process-wide and would kill any concurrent
+		// playback stream. The single Terminate at process exit
+		// (main.go's defer) is the only correct place to call it.
 		close(out)
 		log.Printf("[audio] capture stopped")
 	}()

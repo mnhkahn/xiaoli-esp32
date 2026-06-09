@@ -98,8 +98,18 @@ func (p *Pipeline) EncodeLoop(ctx context.Context, pcmIn <-chan []int16, sink Fr
 
 // DecodeLoop reads OPUS packets from src, decodes them, and writes
 // the resulting PCM frames to pcmOut. The loop returns when src
-// signals EOF, or when ctx is done.
+// signals EOF, or when ctx is done. On exit it closes pcmOut so
+// downstream consumers (e.g. the playback forwarder) can drain
+// remaining frames and observe EOF via a `for range` loop.
+//
+// The drain-on-close semantics mirror the ESP32 reference
+// (xiaozhi-esp32/main/audio/audio_service.cc): tts.stop flips state
+// but does not clear audio_decode_queue_/audio_playback_queue_.
+// Closing pcmOut here is the "no more packets" signal — the
+// forwarder keeps writing buffered frames to PortAudio and then
+// calls Playback.Drain() to let the speaker play out the rest.
 func (p *Pipeline) DecodeLoop(ctx context.Context, src FrameSource, pcmOut chan<- []int16) {
+	defer close(pcmOut)
 	for {
 		pkt, err := src.Next(ctx)
 		if err != nil {

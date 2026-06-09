@@ -315,7 +315,7 @@ func TestSchedulesAPIIncludesBackgroundTasks(t *testing.T) {
 	cfg.StudyMonitorTimezone = "Asia/Shanghai"
 	cfg.StudyMonitorStartHour = 17
 	cfg.StudyMonitorEndHour = 21
-	cfg.StudyMonitorInterval = 5 * time.Minute
+	cfg.StudyMonitorInterval = 10 * time.Minute
 	cfg.StudyMonitorCameraTool = "self.camera.take_photo"
 	cfg.MorningGreetingEnabled = true
 	cfg.MorningGreetingTimezone = "Asia/Shanghai"
