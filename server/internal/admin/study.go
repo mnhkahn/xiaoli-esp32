@@ -302,9 +302,14 @@ func (s *AdminServer) runStudyMonitorOnce(ctx context.Context, checkedAt time.Ti
 	}
 	imageKey := ""
 	if record := s.recentDeviceImageRecord(deviceID, started.Add(-2*time.Second)); record != nil {
+		log.Printf("[lark] found device image for %s: bytes=%d content-type=%s", deviceID, len(record.Body), record.ContentType)
 		if key, err := s.uploadLarkImage(ctx, record.Body, record.ContentType); err == nil {
 			imageKey = key
+		} else {
+			log.Printf("[lark] image upload failed for device=%s: %v", deviceID, err)
 		}
+	} else {
+		log.Printf("[lark] no device image found for %s", deviceID)
 	}
 	return s.sendLarkStudyMessage(ctx, studyLarkPayloadInput{
 		DeviceID:       deviceID,
@@ -501,10 +506,13 @@ func (s *AdminServer) sendLarkStudyMessage(ctx context.Context, input studyLarkP
 
 func (s *AdminServer) uploadLarkImage(ctx context.Context, body []byte, contentType string) (string, error) {
 	if s.cfg.LarkAppID == "" || s.cfg.LarkAppSecret == "" {
+		log.Printf("[lark] image upload skipped: Lark credentials not configured")
 		return "", nil
 	}
+	log.Printf("[lark] image upload start: bytes=%d content-type=%s", len(body), contentType)
 	token, err := s.getLarkTenantAccessToken(ctx)
 	if err != nil {
+		log.Printf("[lark] image upload failed: get tenant access token: %v", err)
 		return "", err
 	}
 	var form bytes.Buffer
@@ -512,12 +520,14 @@ func (s *AdminServer) uploadLarkImage(ctx context.Context, body []byte, contentT
 	_ = writer.WriteField("image_type", "message")
 	part, err := writer.CreateFormFile("image", "study-monitor.jpg")
 	if err != nil {
+		log.Printf("[lark] image upload failed: create form file: %v", err)
 		return "", err
 	}
 	_, _ = part.Write(body)
 	_ = writer.Close()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://open.larksuite.com/open-apis/im/v1/images", &form)
 	if err != nil {
+		log.Printf("[lark] image upload failed: create request: %v", err)
 		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -525,18 +535,23 @@ func (s *AdminServer) uploadLarkImage(ctx context.Context, body []byte, contentT
 	req.Header.Set("X-Image-Content-Type", contentType)
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
+		log.Printf("[lark] image upload failed: HTTP request: %v", err)
 		return "", err
 	}
 	defer resp.Body.Close()
 	var payload map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		log.Printf("[lark] image upload failed: decode response: %v", err)
 		return "", err
 	}
 	if code, _ := int64Value(payload["code"]); code != 0 {
+		log.Printf("[lark] image upload failed: API error code=%v msg=%v", payload["code"], payload["msg"])
 		return "", fmt.Errorf("lark image upload failed: %v", payload)
 	}
 	data, _ := payload["data"].(map[string]any)
-	return stringValue(data["image_key"]), nil
+	imageKey := stringValue(data["image_key"])
+	log.Printf("[lark] image upload ok: image_key=%s", imageKey)
+	return imageKey, nil
 }
 
 func (s *AdminServer) getLarkTenantAccessToken(ctx context.Context) (string, error) {
