@@ -32,13 +32,14 @@ type DeviceController interface {
 }
 
 type DeviceHub struct {
-	cfg    Config
-	stream *streamHub
-	audio  *audioStore
-	asr    SpeechRecognizer
-	agent  *EinoAgent
-	vision VisionAnalyzer
-	tts    SpeechSynthesizer
+	cfg          Config
+	stream       *streamHub
+	audio        *audioStore
+	asr          SpeechRecognizer
+	agent        *EinoAgent
+	vision       VisionAnalyzer
+	tts          SpeechSynthesizer
+	conversation *ConversationPipeline
 
 	mu       sync.Mutex
 	sessions map[string]*deviceSession
@@ -432,34 +433,15 @@ func (h *DeviceHub) processVoiceTurn(session *deviceSession, frames [][]byte) {
 }
 
 func (h *DeviceHub) answerUserText(ctx context.Context, session *deviceSession, userText string) string {
-	// needsVision 快速路径：视觉关键词直接调用 camera tool，不走 Agent ReAct 循环
-	if needsVision(userText) {
-		result, err := h.Call(ctx, BridgeCallRequest{
-			DeviceID: session.deviceID,
-			Tool:     "self.camera.take_photo",
-			Arguments: map[string]any{
-				"question": userText,
-			},
-			Timeout: 120,
-		})
-		if err == nil && result.Error == "" {
-			if text := strings.TrimSpace(extractMCPText(result.Result)); text != "" {
-				return text
-			}
-		}
-		if err != nil {
-			return "我现在看不了摄像头，原因是" + err.Error()
-		}
-	}
-	if h.agent == nil {
+	if h.conversation == nil {
 		return "我现在还没有配置语言模型。"
 	}
-	answer, err := h.agent.Chat(ctx, session.deviceID, userText)
+	reply, err := h.conversation.Run(ctx, DeviceVoiceFactory{}.Build(session, userText))
 	if err != nil {
-		log.Printf("agent chat failed for %s: %v", session.deviceID, err)
+		log.Printf("conversation failed for %s: %v", session.deviceID, err)
 		return "我现在回答不了，语言模型调用失败。"
 	}
-	return answer
+	return reply.Text
 }
 
 func (h *DeviceHub) playAssistantText(ctx context.Context, session *deviceSession, text string) error {

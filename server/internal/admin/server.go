@@ -45,21 +45,24 @@ var hopByHopHeaders = map[string]struct{}{
 }
 
 type AdminServer struct {
-	cfg         Config
-	signer      *signer
-	bridge      *BridgeClient
-	httpClient  *http.Client
-	stream      *streamHub
-	audioStore  *audioStore
-	deviceHub   *DeviceHub
-	memory      memoryReader
-	agent       *EinoAgent
-	imagesMu    sync.Mutex
-	images      map[string]imageRecord
-	imagesByDev map[string][]string
-	oidcMu      sync.Mutex
-	oidc        *oidcConfig
-	oidcFetcher func() (oidcConfig, error)
+	cfg          Config
+	signer       *signer
+	bridge       *BridgeClient
+	httpClient   *http.Client
+	stream       *streamHub
+	audioStore   *audioStore
+	deviceHub    *DeviceHub
+	conversation *ConversationPipeline
+	memory       memoryReader
+	agent        *EinoAgent
+	imagesMu     sync.Mutex
+	images       map[string]imageRecord
+	imagesByDev  map[string][]string
+	larkMu       sync.Mutex
+	larkEvents   map[string]time.Time
+	oidcMu       sync.Mutex
+	oidc         *oidcConfig
+	oidcFetcher  func() (oidcConfig, error)
 }
 
 type imageRecord struct {
@@ -98,18 +101,22 @@ func NewServer(cfg Config) *AdminServer {
 	if agent != nil {
 		agent.SetHub(deviceHub)
 	}
+	conversation := newConversationPipeline(agent, deviceHub)
+	deviceHub.conversation = conversation
 	s := &AdminServer{
-		cfg:         cfg,
-		signer:      newSigner(cfg.SessionSecret, cfg.now),
-		httpClient:  client,
-		bridge:      NewBridgeClient(cfg.BridgeBaseURL, client),
-		stream:      stream,
-		audioStore:  audioStore,
-		agent:       agent,
-		deviceHub:   deviceHub,
-		memory:      memory,
-		images:      map[string]imageRecord{},
-		imagesByDev: map[string][]string{},
+		cfg:          cfg,
+		signer:       newSigner(cfg.SessionSecret, cfg.now),
+		httpClient:   client,
+		bridge:       NewBridgeClient(cfg.BridgeBaseURL, client),
+		stream:       stream,
+		audioStore:   audioStore,
+		agent:        agent,
+		deviceHub:    deviceHub,
+		conversation: conversation,
+		memory:       memory,
+		images:       map[string]imageRecord{},
+		imagesByDev:  map[string][]string{},
+		larkEvents:   map[string]time.Time{},
 	}
 	s.oidcFetcher = s.fetchOIDCConfig
 	return s
@@ -128,6 +135,8 @@ func (s *AdminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleXiaozhiOTA(w, r)
 	case r.URL.Path == "/xiaozhi/v1/" || r.URL.Path == "/xiaozhi/v1":
 		s.handleXiaozhiWebSocket(w, r)
+	case r.URL.Path == "/lark/events":
+		s.handleLarkEvents(w, r)
 	case strings.HasPrefix(r.URL.Path, "/xiaoli/audio/"):
 		s.handleDeviceAudio(w, r)
 	case strings.HasPrefix(r.URL.Path, "/mcp/vision/"):

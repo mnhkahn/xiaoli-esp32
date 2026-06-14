@@ -6,6 +6,7 @@ The container runs a single Go process on port `8080`:
 
 - `https://<app>.fly.dev/xiaozhi/ota/` issues the board WebSocket config
 - `wss://<app>.fly.dev/xiaozhi/v1/` accepts the board WebSocket connection and MCP calls
+- `https://<app>.fly.dev/lark/events` accepts Lark message events when `LARK_APP_ID` and `LARK_APP_TOKEN` are configured
 - `https://<app>.fly.dev/mcp/vision/snapshot` and `/mcp/vision/stream/frame` receive camera uploads
 - `https://<app>.fly.dev/admin` serves the Admin console
 - Voice chat receives board Opus audio, runs ASR -> LLM/VLLM -> TTS, and asks the board to play Ogg Opus through `self.audio_speaker.play_ogg_url`
@@ -37,7 +38,7 @@ fly secrets set SILICONFLOW_API_KEY=your_siliconflow_key
 fly secrets set SERVER_AUTH_KEY=$(openssl rand -hex 32)
 fly secrets set ADMIN_SESSION_SECRET=$(openssl rand -hex 32)
 fly secrets set LOGTO_APP_SECRET=your_logto_app_secret
-fly secrets set STUDY_MONITOR_ENABLED=true LARK_BOT_WEBHOOK_URL=your_lark_webhook LARK_APP_ID=your_lark_app_id LARK_APP_SECRET=your_lark_app_secret
+fly secrets set STUDY_MONITOR_ENABLED=true LARK_BOT_WEBHOOK_URL=your_lark_webhook LARK_APP_ID=your_lark_app_id LARK_APP_TOKEN=your_lark_app_token
 ```
 
 Server authentication is enabled by default. OTA is left reachable so devices
@@ -117,8 +118,8 @@ Important environment variables:
 - `STUDY_MONITOR_TOOL_TIMEOUT_SECONDS`: camera tool timeout; default `120`
 - `STUDY_MONITOR_REMINDER_TEXT`: speaker reminder text when posture/focus needs correction
 - `LARK_BOT_WEBHOOK_URL`: custom bot webhook URL; set as a secret
-- `LARK_APP_ID`: Lark app ID used to upload message images; set as a secret
-- `LARK_APP_SECRET`: Lark app secret used to upload message images; set as a secret
+- `LARK_APP_ID`: Lark app ID; when set together with `LARK_APP_TOKEN`, enables `/lark/events`
+- `LARK_APP_TOKEN`: Lark app token used as the app credential for tenant access tokens; set as a secret
 - `ASR_MODULE`: default `SiliconFlowASR`
 - `LLM_MODULE`: default `SiliconFlowLLM`
 - `VLLM_MODULE`: default `SiliconFlowVLLM`

@@ -668,11 +668,11 @@ func (c *externalMCPClient) mcpPost(ctx context.Context, payload []byte, extraHe
 // ---------------------------------------------------------------------------
 
 type EinoAgent struct {
-	chatModel  *openai.ChatModel
-	memory     *redisMemory
-	cfg        Config
-	hub        *DeviceHub
-	extMCPs    []*externalMCPClient
+	chatModel   *openai.ChatModel
+	memory      *redisMemory
+	cfg         Config
+	hub         *DeviceHub
+	extMCPs     []*externalMCPClient
 	extToolSets [][]tool.BaseTool
 }
 
@@ -734,10 +734,21 @@ func (a *EinoAgent) SetHub(hub *DeviceHub) {
 
 // Chat sends userText through the Eino agent with memory and optional MCP tools.
 func (a *EinoAgent) Chat(ctx context.Context, deviceID string, userText string) (string, error) {
-	log.Printf("EinoAgent.Chat called: device=%s text=%q", deviceID, userText)
+	return a.ChatWithContext(ctx, deviceID, deviceID, userText)
+}
+
+// ChatWithContext separates the conversation memory key from the optional
+// device ID used for MCP tools. Device voice turns use the same value for both;
+// text-only channels such as Lark use their channel conversation ID and leave
+// deviceID empty unless they intentionally bind to a device.
+func (a *EinoAgent) ChatWithContext(ctx context.Context, conversationID string, deviceID string, userText string) (string, error) {
+	if conversationID == "" {
+		conversationID = deviceID
+	}
+	log.Printf("EinoAgent.Chat called: conversation=%s device=%s text=%q", conversationID, deviceID, userText)
 
 	// Load conversation history
-	history := a.memory.Load(ctx, deviceID)
+	history := a.memory.Load(ctx, conversationID)
 
 	// Build message list: system + history + new user message
 	msgs := make([]*schema.Message, 0, len(history)+2)
@@ -749,7 +760,7 @@ func (a *EinoAgent) Chat(ctx context.Context, deviceID string, userText string) 
 
 	// Build tool list: device MCP tools + external MCP tools
 	var einoTools []tool.BaseTool
-	if a.hub != nil {
+	if a.hub != nil && deviceID != "" {
 		if session := a.hub.session(deviceID); session != nil {
 			einoTools = mcpToolsToEinoTools(session, a.hub)
 		}
@@ -814,7 +825,7 @@ func (a *EinoAgent) Chat(ctx context.Context, deviceID string, userText string) 
 		schema.UserMessage(userText),
 		result,
 	)
-	a.memory.Save(ctx, deviceID, updated)
+	a.memory.Save(ctx, conversationID, updated)
 
 	return result.Content, nil
 }

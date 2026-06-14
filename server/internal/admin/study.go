@@ -505,7 +505,7 @@ func (s *AdminServer) sendLarkStudyMessage(ctx context.Context, input studyLarkP
 }
 
 func (s *AdminServer) uploadLarkImage(ctx context.Context, body []byte, contentType string) (string, error) {
-	if s.cfg.LarkAppID == "" || s.cfg.LarkAppSecret == "" {
+	if s.cfg.LarkAppID == "" || s.cfg.LarkAppToken == "" {
 		log.Printf("[lark] image upload skipped: Lark credentials not configured")
 		return "", nil
 	}
@@ -555,7 +555,7 @@ func (s *AdminServer) uploadLarkImage(ctx context.Context, body []byte, contentT
 }
 
 func (s *AdminServer) getLarkTenantAccessToken(ctx context.Context) (string, error) {
-	requestBody, _ := json.Marshal(map[string]string{"app_id": s.cfg.LarkAppID, "app_secret": s.cfg.LarkAppSecret})
+	requestBody, _ := json.Marshal(map[string]string{"app_id": s.cfg.LarkAppID, "app_secret": s.cfg.LarkAppToken})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(requestBody))
 	if err != nil {
 		return "", err

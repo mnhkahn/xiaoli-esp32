@@ -352,7 +352,7 @@ func TestSchedulesAPIIncludesBackgroundTasks(t *testing.T) {
 	if task["id"] != "study_monitor" || task["enabled"] != true || task["timezone"] != "Asia/Shanghai" {
 		t.Fatalf("unexpected schedule task: %#v", task)
 	}
-	if task["interval_seconds"] != float64(300) || task["window"] != "17:00-21:00" {
+	if task["interval_seconds"] != float64(600) || task["window"] != "17:00-21:00" {
 		t.Fatalf("unexpected schedule timing: %#v", task)
 	}
 	greeting := payload.Schedules[1]
